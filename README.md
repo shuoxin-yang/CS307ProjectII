@@ -90,6 +90,8 @@ After setting up your database and modifying the configuration file, you may run
 
 #### 3.1 Interactive shell
 
+##### You should create all the implementation classes for all services first of all and override all methods.
+
 You can test your services by typing commands in any sequence, with any data. Run the Gradle task named **`bootRun`**
 to start the interactive shell.
 
