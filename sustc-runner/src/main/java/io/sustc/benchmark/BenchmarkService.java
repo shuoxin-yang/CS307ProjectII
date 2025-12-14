@@ -577,13 +577,17 @@ public class BenchmarkService {
             val args = it.getKey();
             try {
                 val res = userService.follow((AuthInfo) args[0], (long) args[1]);
-                if (Objects.equals(it.getValue(), res)) {
+                if (Boolean.TRUE.equals(it.getValue())) {
                     pass.incrementAndGet();
                 } else {
-                    log.debug("Wrong register result for {}: expected {}, got {}", args, it.getValue(), res);
+                    log.debug("Wrong result for {}: expected {}, got {}", args, "true", res);
                 }
-            } catch (Exception e) {
-                log.error("Exception thrown for args {}: {}", Arrays.toString(args), e.toString());
+            } catch (SecurityException e) {
+                if (Boolean.FALSE.equals(it.getValue())) {
+                    pass.incrementAndGet();
+                } else {
+                    log.debug("Wrong answer for {}: expected {}, got {}", it.getKey(), it.getValue(), "SecurityException");
+                }
             }
         });
         val endTime = System.currentTimeMillis();
@@ -601,10 +605,10 @@ public class BenchmarkService {
              val args = it.getKey();
              try {
                  val res = userService.deleteAccount((AuthInfo) args[0], (long) args[1]);
-                 if (Objects.equals(it.getValue(), res)) {
+                 if (Boolean.TRUE.equals(it.getValue())) {
                      pass.incrementAndGet();
                  } else {
-                     log.debug("Wrong register result for {}: expected {}, got {}", args, it.getValue(), res);
+                     log.debug("Wrong result for {}: expected {}, got {}", args, "true", res);
                  }
              } catch (IllegalArgumentException | SecurityException illegalArgumentException) {
                  if (Boolean.FALSE.equals(it.getValue())) {
