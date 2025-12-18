@@ -45,6 +45,7 @@ public class DatabaseServiceImpl implements DatabaseService {
     public List<Integer> getGroupMembers() {
         //TODO: replace this with your own student IDs in your group
         return Arrays.asList(12411011, 12411024);
+
     }
 
     @Autowired
