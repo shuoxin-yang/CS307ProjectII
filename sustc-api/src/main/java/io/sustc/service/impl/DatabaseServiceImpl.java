@@ -43,7 +43,6 @@ public class DatabaseServiceImpl implements DatabaseService {
 
     @Override
     public List<Integer> getGroupMembers() {
-        //TODO: replace this with your own student IDs in your group
         return Arrays.asList(12411011, 12411024);
 
     }
@@ -61,9 +60,7 @@ public class DatabaseServiceImpl implements DatabaseService {
         // ddl to create tables.
         createTables();
 
-        // TODO: implement your import logic
-
-        // 定义批次大小
+        // 定义批次大小 设定？
         int BATCH_SIZE = 1000;
 
         // 拆分列表为多个子列表，每个子列表大小为BATCH_SIZE
@@ -106,6 +103,7 @@ public class DatabaseServiceImpl implements DatabaseService {
                 for (long fid : followingUsers) {
                     if (fid == authorId) continue; // skip self-follow
                     String key = authorId + "-" + fid;
+                    // 去重
                     if (seenFollows.add(key)) {
                         followArgs.add(new Object[]{authorId, fid});
                     }
@@ -256,7 +254,6 @@ public class DatabaseServiceImpl implements DatabaseService {
             }
         }
     }
-
 
     private void createTables() {
         String[] createTableSQLs = {
