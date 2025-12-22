@@ -73,10 +73,10 @@ public class ReviewServiceImpl implements ReviewService {
     private void refreshRecipeRatingStats(long recipeId) {
         // 计算平均评分和评论数
         String statSql = """
-            SELECT 
+            SELECT
                 COUNT(*) as review_count,
                 ROUND(AVG(Rating), 2) as avg_rating
-            FROM reviews 
+            FROM reviews
             WHERE RecipeId = ?
         """;
 
@@ -86,7 +86,7 @@ public class ReviewServiceImpl implements ReviewService {
             Double avgRating = (Double) stats.get("avg_rating");
 
             String updateSql = """
-                UPDATE recipes 
+                UPDATE recipes
                 SET ReviewCount = ?, 
                     AggregatedRating = ?
                 WHERE RecipeId = ?

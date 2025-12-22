@@ -44,7 +44,7 @@ public class RecipeServiceImpl implements RecipeService {
         record.setTotalTime(rs.getString("totalTime"));
 
         Timestamp ts = rs.getTimestamp("datePublished");
-        record.setDatePublished(ts != null ? ts : null);
+        record.setDatePublished(ts);
 
         record.setDescription(rs.getString("description"));
         record.setRecipeCategory(rs.getString("recipeCategory"));
@@ -82,7 +82,7 @@ public class RecipeServiceImpl implements RecipeService {
         }
 
         try {
-            String sql = "SELECT name FROM recipes WHERE RecipeId = ? AND is_deleted = false";
+            String sql = "SELECT name FROM recipes WHERE RecipeId = ?";
             return jdbcTemplate.queryForObject(sql, String.class, id);
         } catch (EmptyResultDataAccessException e) {
             return null;
@@ -98,18 +98,16 @@ public class RecipeServiceImpl implements RecipeService {
         try {
             // 获取食谱基本信息
             String sql = """
-                SELECT r.*, u.authorName, 
+                SELECT r.*, u.authorName,
                        STRING_AGG(ri.IngredientPart, ',' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
                 FROM recipes r
                 LEFT JOIN users u ON r.authorId = u.authorId
                 LEFT JOIN recipe_ingredients ri ON r.RecipeId = ri.RecipeId
-                WHERE r.RecipeId = ? AND r.is_deleted = false AND u.isDeleted = false
+                WHERE r.RecipeId = ? AND u.isDeleted = false
                 GROUP BY r.RecipeId, u.authorName
                 """;
 
-            RecipeRecord recipe = jdbcTemplate.queryForObject(sql, recipeRowMapper, recipeId);
-
-            return recipe;
+            return jdbcTemplate.queryForObject(sql, recipeRowMapper, recipeId);
         } catch (EmptyResultDataAccessException e) {
             return null;
         }
@@ -125,12 +123,12 @@ public class RecipeServiceImpl implements RecipeService {
 
         // 构建基础查询
         StringBuilder sql = new StringBuilder("""
-            SELECT r.*, u.authorName, 
+            SELECT r.*, u.authorName,
                    STRING_AGG(ri.IngredientPart, ',' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
             FROM recipes r
             LEFT JOIN users u ON r.authorId = u.authorId
             LEFT JOIN recipe_ingredients ri ON r.RecipeId = ri.RecipeId
-            WHERE r.is_deleted = false AND u.isDeleted = false
+            WHERE u.isDeleted = false
             """);
 
         List<Object> params = new ArrayList<>();
@@ -222,8 +220,8 @@ public class RecipeServiceImpl implements RecipeService {
                 reviewCount, calories, fatContent, saturatedFatContent,
                 cholesterolContent, sodiumContent, carbohydrateContent,
                 fiberContent, sugarContent, proteinContent, recipeServings,
-                recipeYield, is_deleted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false)
+                recipeYield
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
         jdbcTemplate.update(sql,
@@ -276,7 +274,7 @@ public class RecipeServiceImpl implements RecipeService {
         }
 
         // 验证食谱是否存在且用户是作者
-        String checkSql = "SELECT authorId FROM recipes WHERE RecipeId = ? AND is_deleted = false";
+        String checkSql = "SELECT authorId FROM recipes WHERE RecipeId = ?";
         try {
             Long authorId = jdbcTemplate.queryForObject(checkSql, Long.class, recipeId);
 
@@ -295,7 +293,7 @@ public class RecipeServiceImpl implements RecipeService {
         // 开始级联删除
         // 1. 删除评论点赞
         String deleteReviewLikesSql = """
-            DELETE FROM review_likes 
+            DELETE FROM review_likes
             WHERE ReviewId IN (SELECT ReviewId FROM reviews WHERE RecipeId = ?)
             """;
         jdbcTemplate.update(deleteReviewLikesSql, recipeId);
@@ -327,7 +325,7 @@ public class RecipeServiceImpl implements RecipeService {
         }
 
         // 验证用户是否是食谱作者
-        String checkSql = "SELECT authorId FROM recipes WHERE RecipeId = ? AND is_deleted = false";
+        String checkSql = "SELECT authorId FROM recipes WHERE RecipeId = ?";
         Long authorId;
         try {
             authorId = jdbcTemplate.queryForObject(checkSql, Long.class, recipeId);
@@ -412,10 +410,10 @@ public class RecipeServiceImpl implements RecipeService {
             WITH recipe_calories AS (
                 SELECT RecipeId, calories, name
                 FROM recipes
-                WHERE calories IS NOT NULL AND is_deleted = false
+                WHERE calories IS NOT NULL
             ),
             pairs AS (
-                SELECT 
+                SELECT
                     r1.RecipeId AS recipe_a,
                     r2.RecipeId AS recipe_b,
                     r1.calories AS calories_a,
@@ -448,15 +446,14 @@ public class RecipeServiceImpl implements RecipeService {
     @Override
     public List<Map<String, Object>> getTop3MostComplexRecipesByIngredients() {
         String sql = """
-            SELECT 
+            SELECT
                 r.RecipeId AS "RecipeId",
                 r.name AS "Name",
                 COUNT(ri.IngredientPart) AS "IngredientCount"
             FROM recipes r
             JOIN recipe_ingredients ri ON r.RecipeId = ri.RecipeId
-            WHERE r.is_deleted = false
             GROUP BY r.RecipeId, r.name
-            ORDER BY COUNT(ri.IngredientPart) DESC, r.RecipeId ASC
+            ORDER BY COUNT(ri.IngredientPart) DESC, r.RecipeId
             LIMIT 3
             """;
 
