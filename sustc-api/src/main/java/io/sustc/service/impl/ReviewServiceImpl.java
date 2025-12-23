@@ -5,6 +5,7 @@ import io.sustc.dto.PageResult;
 import io.sustc.dto.RecipeRecord;
 import io.sustc.dto.ReviewRecord;
 import io.sustc.service.ReviewService;
+import io.sustc.service.UserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -26,12 +27,14 @@ public class ReviewServiceImpl implements ReviewService {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private UserService userService;
+
     // 验证用户是否有效且活跃
-    private boolean isValidActiveUser(long userId) {
+    private boolean isValidActiveUser(AuthInfo userInfo) {
         try {
-            String sql = "SELECT COUNT(*) FROM users WHERE AuthorId = ? AND IsDeleted = FALSE";
-            Integer count = jdbcTemplate.queryForObject(sql, Integer.class, userId);
-            return count != null && count > 0;
+            long id = userService.login(userInfo);
+            return id == userInfo.getAuthorId();
         } catch (Exception e) {
             return false;
         }
@@ -82,8 +85,8 @@ public class ReviewServiceImpl implements ReviewService {
 
         try {
             Map<String, Object> stats = jdbcTemplate.queryForMap(statSql, recipeId);
-            Integer reviewCount = ((Number) stats.get("review_count")).intValue();
-            Double avgRating = (Double) stats.get("avg_rating");
+            Integer reviewCount = stats.get("review_count")==null?0:((Number) stats.get("review_count")).intValue();
+            Double avgRating =stats.get("avg_rating")==null?0:((Number)stats.get("avg_rating")).doubleValue();
 
             String updateSql = """
                 UPDATE recipes
@@ -94,10 +97,8 @@ public class ReviewServiceImpl implements ReviewService {
 
             jdbcTemplate.update(updateSql, reviewCount, avgRating, recipeId);
 
-        } catch (EmptyResultDataAccessException e) {
-            // 没有评论，设为null和0
-            String updateSql = "UPDATE recipes SET ReviewCount = 0, AggregatedRating = NULL WHERE RecipeId = ?";
-            jdbcTemplate.update(updateSql, recipeId);
+        }catch (Exception e){
+            return;
         }
     }
 
@@ -109,7 +110,7 @@ public class ReviewServiceImpl implements ReviewService {
             throw new IllegalArgumentException("AuthInfo cannot be null");
         }
 
-        if (!isValidActiveUser(auth.getAuthorId())) {
+        if (!isValidActiveUser(auth)) {
             throw new SecurityException("User is invalid or inactive");
         }
 
@@ -121,33 +122,42 @@ public class ReviewServiceImpl implements ReviewService {
             throw new IllegalArgumentException("Rating must be between 1 and 5");
         }
 
-        // 2. 检查用户是否已经评论过此食谱（可选，如果要求每个用户只能评论一次）
-        String checkSql = "SELECT COUNT(*) FROM reviews WHERE AuthorId = ? AND RecipeId = ?";
-        Integer existingCount = jdbcTemplate.queryForObject(checkSql, Integer.class, auth.getAuthorId(), recipeId);
-        if (existingCount != null && existingCount > 0) {
-            // 根据业务需求决定：是更新已有评论还是抛出异常
-            // 这里假设允许用户更新自己的评论，但不允许重复提交
-            throw new IllegalArgumentException("User has already reviewed this recipe");
+        // 2. 生成 reviewId（简单策略）并尝试插入，防止重复主键造成失败
+        int maxAttempts = 5;
+        long reviewId = -1L;
+        Timestamp now = Timestamp.from(Instant.now());
+        String insertSql = "INSERT INTO reviews (ReviewId, RecipeId, AuthorId, Rating, Review, DateSubmitted, DateModified) VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            // Generate reviewId as max(existing ReviewId)+1 to follow requested strategy
+            try {
+                Long maxId = jdbcTemplate.queryForObject("SELECT COALESCE(MAX(ReviewId), 0) FROM reviews", Long.class);
+                reviewId = (maxId == null ? 1L : maxId + 1L);
+            } catch (Exception e) {
+                // If query fails for some reason, fallback to timestamp-based id
+                reviewId = System.currentTimeMillis() % 1000000000L;
+            }
+
+            try {
+                int inserted = jdbcTemplate.update(insertSql, reviewId, recipeId, auth.getAuthorId(), rating, review, now, now);
+                if (inserted > 0) {
+                    // 3. 刷新食谱统计（平均分与评论数）
+                    refreshRecipeRatingStats(recipeId);
+
+                    log.info("Review {} added for recipe {} by user {}", reviewId, recipeId, auth.getAuthorId());
+                    return reviewId;
+                }
+            } catch (Exception e) {
+                // 可能是主键冲突或其他原因，记录并重试
+                log.debug("Attempt {} to insert review failed with id {}: {}", attempt + 1, reviewId, e.toString());
+                try {
+                    Thread.sleep(1);
+                } catch (InterruptedException ignored) {
+                }
+            }
         }
 
-        // 3. 生成评论ID（可以根据业务需求调整）
-        long reviewId = System.currentTimeMillis(); // 简单的时间戳作为ID，实际应用中可能需要更健壮的ID生成策略
-
-        // 4. 插入评论
-        String insertSql = """
-            INSERT INTO reviews (ReviewId, RecipeId, AuthorId, Rating, Review, DateSubmitted, DateModified)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """;
-
-        Timestamp now = Timestamp.from(Instant.now());
-        jdbcTemplate.update(insertSql,
-                reviewId, recipeId, auth.getAuthorId(), rating, review, now, now);
-
-        // 5. 更新食谱的评分统计
-        refreshRecipeRatingStats(recipeId);
-
-        log.info("Review {} added for recipe {} by user {}", reviewId, recipeId, auth.getAuthorId());
-        return reviewId;
+        throw new RuntimeException("Failed to insert review after multiple attempts");
     }
 
     @Override
@@ -158,7 +168,7 @@ public class ReviewServiceImpl implements ReviewService {
             throw new IllegalArgumentException("AuthInfo cannot be null");
         }
 
-        if (!isValidActiveUser(auth.getAuthorId())) {
+        if (!isValidActiveUser(auth)) {
             throw new SecurityException("User is invalid or inactive");
         }
 
@@ -210,7 +220,7 @@ public class ReviewServiceImpl implements ReviewService {
             throw new IllegalArgumentException("AuthInfo cannot be null");
         }
 
-        if (!isValidActiveUser(auth.getAuthorId())) {
+        if (!isValidActiveUser(auth)) {
             throw new SecurityException("User is invalid or inactive");
         }
 
@@ -252,10 +262,10 @@ public class ReviewServiceImpl implements ReviewService {
     public long likeReview(AuthInfo auth, long reviewId) {
         // 1. 验证参数
         if (auth == null) {
-            throw new IllegalArgumentException("AuthInfo cannot be null");
+            throw new SecurityException("AuthInfo cannot be null");
         }
 
-        if (!isValidActiveUser(auth.getAuthorId())) {
+        if (!isValidActiveUser(auth)) {
             throw new SecurityException("User is invalid or inactive");
         }
 
@@ -301,7 +311,7 @@ public class ReviewServiceImpl implements ReviewService {
             throw new IllegalArgumentException("AuthInfo cannot be null");
         }
 
-        if (!isValidActiveUser(auth.getAuthorId())) {
+        if (!isValidActiveUser(auth)) {
             throw new SecurityException("User is invalid or inactive");
         }
 
@@ -467,3 +477,4 @@ public class ReviewServiceImpl implements ReviewService {
         }
     }
 }
+

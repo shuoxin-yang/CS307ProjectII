@@ -5,26 +5,17 @@ import io.sustc.service.UserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.EmptyResultDataAccessException;
-import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
-import org.springframework.jdbc.support.GeneratedKeyHolder;
-import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
 
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.Period;
-import java.time.ZoneOffset;
+import java.time.*;
 import java.time.format.DateTimeParseException;
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
 @Slf4j
@@ -34,13 +25,11 @@ public class UserServiceImpl implements UserService {
     private JdbcTemplate jdbcTemplate;
 
     // 验证用户是否有效且活跃
-    private boolean isValidActiveUser(long userId) {
+    private boolean isValidActiveUser(AuthInfo userInfo) {
         try {
-            String sql = "SELECT COUNT(*) FROM users WHERE AuthorId = ? AND IsDeleted = FALSE";
-            Integer count = jdbcTemplate.queryForObject(sql, Integer.class, userId);
-            return count != null && count > 0;
+            long id = this.login(userInfo);
+            return id == userInfo.getAuthorId();
         } catch (Exception e) {
-            log.error("Error validating user: {}", userId, e);
             return false;
         }
     }
@@ -141,30 +130,42 @@ public class UserServiceImpl implements UserService {
             return -1;
         }
 
-        // 5. 生成用户ID（可以使用时间戳或其他策略）
-        long authorId = System.currentTimeMillis() % 1000000000L; // 生成9位用户ID
-
-        // 6. 插入用户记录
+        // 5. 生成用户ID（从数据库里取最大 AuthorId + 1，避免重复）
         String insertSql = """
-            INSERT INTO users (AuthorId, AuthorName, Gender, Age, Password, IsDeleted, Followers, Following)
-            VALUES (?, ?, ?, ?, ?, FALSE, 0, 0)
-        """;
+                    INSERT INTO users (AuthorId, AuthorName, Gender, Age, Password, IsDeleted, Followers, Following)
+                    VALUES (?, ?, ?, ?, ?, FALSE, 0, 0)
+                """;
 
-        try {
-            int result = jdbcTemplate.update(insertSql,
-                    authorId, req.getName(), gender, age, req.getPassword());
+        int maxAttempts = 5;
+        long authorId = -1L;
 
-            if (result > 0) {
-                log.info("User registered successfully: {} (ID: {})", req.getName(), authorId);
-                return authorId;
-            } else {
-                log.error("Registration failed: no rows affected");
-                return -1;
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+                Long maxId = jdbcTemplate.queryForObject("SELECT COALESCE(MAX(AuthorId), 0) FROM users", Long.class);
+                authorId = (maxId == null ? 1L : maxId + 1L);
+            } catch (Exception e) {
+                // 如果查询最大 id 失败，回退到基于时间戳的策略
+                authorId = System.currentTimeMillis() % 1000000000L;
             }
-        } catch (Exception e) {
-            log.error("Registration failed for user: {}", req.getName(), e);
-            return -1;
+
+            try {
+                int result = jdbcTemplate.update(insertSql, authorId, req.getName(), gender, age, req.getPassword());
+                if (result > 0) {
+                    log.info("User registered successfully: {} (ID: {})", req.getName(), authorId);
+                    return authorId;
+                }
+            } catch (Exception e) {
+                // 可能是主键冲突或其他并发插入导致，记录并重试
+                log.debug("Attempt {} to insert user failed with id {}: {}", attempt + 1, authorId, e.toString());
+                try {
+                    Thread.sleep(1);
+                } catch (InterruptedException ignored) {
+                }
+            }
         }
+
+        log.error("Registration failed for user {} after {} attempts", req.getName(), maxAttempts);
+        return -1;
     }
 
     @Override
@@ -182,10 +183,10 @@ public class UserServiceImpl implements UserService {
 
         // 2. 查询用户信息
         String sql = """
-            SELECT AuthorId, Password, IsDeleted 
-            FROM users 
-            WHERE AuthorId = ?
-        """;
+                    SELECT AuthorId, Password, IsDeleted 
+                    FROM users 
+                    WHERE AuthorId = ?
+                """;
 
         try {
             Map<String, Object> user = jdbcTemplate.queryForMap(sql, auth.getAuthorId());
@@ -223,7 +224,7 @@ public class UserServiceImpl implements UserService {
             throw new SecurityException("AuthInfo cannot be null");
         }
 
-        if (!isValidActiveUser(auth.getAuthorId())) {
+        if (!isValidActiveUser(auth)) {
             throw new SecurityException("Operator is invalid or inactive");
         }
 
@@ -239,14 +240,16 @@ public class UserServiceImpl implements UserService {
             throw new IllegalArgumentException("Target user does not exist or is already inactive");
         }
 
-        // 4. 移除所有关注关系
-        // 4.1 移除用户关注别人的关系
-        String deleteFollowingSql = "DELETE FROM user_follows WHERE FollowerId = ?";
-        jdbcTemplate.update(deleteFollowingSql, userId);
+        // 4. 在删除关系之前先收集受影响的用户（粉丝与被关注的用户），以便后续更新统计
+        String followersListSql = "SELECT DISTINCT FollowerId FROM user_follows WHERE FollowingId = ?";
+        List<Long> followersList = jdbcTemplate.query(followersListSql, (rs, rn) -> rs.getLong("FollowerId"), userId);
 
-        // 4.2 移除别人关注用户的关系
-        String deleteFollowersSql = "DELETE FROM user_follows WHERE FollowingId = ?";
-        jdbcTemplate.update(deleteFollowersSql, userId);
+        String followingListSql = "SELECT DISTINCT FollowingId FROM user_follows WHERE FollowerId = ?";
+        List<Long> followingList = jdbcTemplate.query(followingListSql, (rs, rn) -> rs.getLong("FollowingId"), userId);
+
+        // 删除所有与该用户相关的关注关系（作为发起者或被关注者）
+        String deleteRelationsSql = "DELETE FROM user_follows WHERE FollowerId = ? OR FollowingId = ?";
+        jdbcTemplate.update(deleteRelationsSql, userId, userId);
 
         // 5. 软删除用户
         String softDeleteSql = "UPDATE users SET IsDeleted = TRUE WHERE AuthorId = ?";
@@ -255,18 +258,23 @@ public class UserServiceImpl implements UserService {
         if (updated > 0) {
             log.info("User account soft-deleted: {}", userId);
 
-            // 6. 更新相关用户的关注统计
-            // 更新原本关注该用户的用户的关注数
-            String updateAffectedUsersSql = """
-                UPDATE users u
-                SET Following = (
-                    SELECT COUNT(*) FROM user_follows uf WHERE uf.FollowerId = u.AuthorId
-                )
-                WHERE u.AuthorId IN (
-                    SELECT DISTINCT FollowerId FROM user_follows WHERE FollowingId = ?
-                )
-            """;
-            jdbcTemplate.update(updateAffectedUsersSql, userId);
+            // 6. 更新受影响用户的关注统计（对收集到的 followersList 与 followingList 做刷新）
+            // 使用 updateUserFollowCounts 单个刷新，保持逻辑集中。
+            Set<Long> affected = new HashSet<>();
+            if (followersList != null) affected.addAll(followersList);
+            if (followingList != null) affected.addAll(followingList);
+
+            for (Long affectedUserId : affected) {
+                try {
+                    updateUserFollowCounts(affectedUserId);
+                } catch (Exception e) {
+                    log.warn("Failed to update follow counts for user {} after deleting account {}: {}", affectedUserId, userId, e.getMessage());
+                }
+            }
+
+            // 将被软删除用户的统计清零（更清晰地表示已删除状态）
+            String zeroSql = "UPDATE users SET Followers = 0, Following = 0 WHERE AuthorId = ?";
+            jdbcTemplate.update(zeroSql, userId);
 
             return true;
         } else {
@@ -285,15 +293,23 @@ public class UserServiceImpl implements UserService {
 
         long followerId = auth.getAuthorId();
 
-        if (!isValidActiveUser(followerId)) {
+        if (!isValidActiveUser(auth)) {
             throw new SecurityException("Follower is invalid or inactive");
         }
 
         // 2. 验证被关注者是否存在
-        if (!isValidActiveUser(followeeId)) {
-            log.warn("Follow operation failed: followee does not exist or is inactive: {}", followeeId);
-            return false;
+        try {
+            String sql = "SELECT COUNT(*) FROM users WHERE AuthorId = ? AND IsDeleted = FALSE";
+            Integer count = jdbcTemplate.queryForObject(sql, Integer.class, followeeId);
+            if (count == null || count != 1) {
+                throw new SecurityException("Followee does not exist or is inactive");
+            }
+        } catch (Exception e) {
+            //log.debug("Error validating user: {}", followeeId, e);
+            throw new SecurityException("Followee does not exist or is inactive");
+
         }
+
 
         // 3. 检查是否关注自己
         if (followerId == followeeId) {
@@ -305,6 +321,8 @@ public class UserServiceImpl implements UserService {
         Integer isFollowing = jdbcTemplate.queryForObject(checkSql, Integer.class, followerId, followeeId);
 
         boolean result = false;
+        // true: we just performed a follow (insert); false: we performed an unfollow (delete)
+        Boolean didFollow = null;
 
         if (isFollowing != null && isFollowing > 0) {
             // 已经关注，执行取消关注
@@ -313,6 +331,7 @@ public class UserServiceImpl implements UserService {
 
             if (deleted > 0) {
                 result = true;
+                didFollow = false;
                 log.info("User {} unfollowed user {}", followerId, followeeId);
             }
         } else {
@@ -321,6 +340,7 @@ public class UserServiceImpl implements UserService {
             try {
                 jdbcTemplate.update(followSql, followerId, followeeId);
                 result = true;
+                didFollow = true;
                 log.info("User {} followed user {}", followerId, followeeId);
             } catch (Exception e) {
                 log.error("Failed to follow user {} -> {}", followerId, followeeId, e);
@@ -328,10 +348,22 @@ public class UserServiceImpl implements UserService {
             }
         }
 
+
         // 5. 更新双方的关注统计
-        if (result) {
-            updateUserFollowCounts(followerId);
-            updateUserFollowCounts(followeeId);
+        if (result && didFollow != null) {
+            if (didFollow) {
+                // increment follower's Following and followee's Followers
+                String incFollowingSql = "UPDATE users SET Following = COALESCE(Following, 0) + 1 WHERE AuthorId = ?";
+                String incFollowersSql = "UPDATE users SET Followers = COALESCE(Followers, 0) + 1 WHERE AuthorId = ?";
+                jdbcTemplate.update(incFollowingSql, followerId);
+                jdbcTemplate.update(incFollowersSql, followeeId);
+            } else {
+                // decrement counts but never below zero
+                String decFollowingSql = "UPDATE users SET Following = GREATEST(COALESCE(Following, 0) - 1, 0) WHERE AuthorId = ?";
+                String decFollowersSql = "UPDATE users SET Followers = GREATEST(COALESCE(Followers, 0) - 1, 0) WHERE AuthorId = ?";
+                jdbcTemplate.update(decFollowingSql, followerId);
+                jdbcTemplate.update(decFollowersSql, followeeId);
+            }
         }
 
         return result;
@@ -342,12 +374,12 @@ public class UserServiceImpl implements UserService {
         try {
             // 1. 查询用户基本信息
             String userSql = """
-                SELECT 
-                    AuthorId, AuthorName, Gender, Age, Password, IsDeleted,
-                    Followers, Following
-                FROM users 
-                WHERE AuthorId = ?
-            """;
+                        SELECT 
+                            AuthorId, AuthorName, Gender, Age, Password, IsDeleted,
+                            Followers, Following
+                        FROM users 
+                        WHERE AuthorId = ?
+                    """;
 
             UserRecord user = jdbcTemplate.queryForObject(userSql, new RowMapper<UserRecord>() {
                 @Override
@@ -371,22 +403,22 @@ public class UserServiceImpl implements UserService {
 
             // 2. 查询粉丝列表
             String followersSql = """
-                SELECT FollowerId 
-                FROM user_follows 
-                WHERE FollowingId = ?
-                ORDER BY FollowerId
-            """;
+                        SELECT FollowerId 
+                        FROM user_follows 
+                        WHERE FollowingId = ?
+                        ORDER BY FollowerId
+                    """;
 
             List<Long> followerList = jdbcTemplate.query(followersSql,
                     (rs, rowNum) -> rs.getLong("FollowerId"), userId);
 
             // 3. 查询关注列表
             String followingSql = """
-                SELECT FollowingId 
-                FROM user_follows 
-                WHERE FollowerId = ?
-                ORDER BY FollowingId
-            """;
+                        SELECT FollowingId 
+                        FROM user_follows 
+                        WHERE FollowerId = ?
+                        ORDER BY FollowingId
+                    """;
 
             List<Long> followingList = jdbcTemplate.query(followingSql,
                     (rs, rowNum) -> rs.getLong("FollowingId"), userId);
@@ -416,7 +448,7 @@ public class UserServiceImpl implements UserService {
 
         long userId = auth.getAuthorId();
 
-        if (!isValidActiveUser(userId)) {
+        if (!isValidActiveUser(auth)) {
             throw new SecurityException("User is invalid or inactive");
         }
 
@@ -477,7 +509,7 @@ public class UserServiceImpl implements UserService {
 
         long userId = auth.getAuthorId();
 
-        if (!isValidActiveUser(userId)) {
+        if (!isValidActiveUser(auth)) {
             throw new SecurityException("User is invalid or inactive");
         }
 
@@ -494,23 +526,23 @@ public class UserServiceImpl implements UserService {
 
         // 查询关注的用户的食谱
         sqlBuilder.append("""
-            SELECT 
-                r.RecipeId,
-                r.Name,
-                r.AuthorId,
-                u.AuthorName,
-                r.DatePublished,
-                r.AggregatedRating,
-                r.ReviewCount
-            FROM recipes r
-            JOIN users u ON r.AuthorId = u.AuthorId
-            WHERE r.AuthorId IN (
-                SELECT FollowingId 
-                FROM user_follows 
-                WHERE FollowerId = ?
-            )
-            AND u.IsDeleted = FALSE
-        """);
+                    SELECT 
+                        r.RecipeId,
+                        r.Name,
+                        r.AuthorId,
+                        u.AuthorName,
+                        r.DatePublished,
+                        r.AggregatedRating,
+                        r.ReviewCount
+                    FROM recipes r
+                    JOIN users u ON r.AuthorId = u.AuthorId
+                    WHERE r.AuthorId IN (
+                        SELECT FollowingId 
+                        FROM user_follows 
+                        WHERE FollowerId = ?
+                    )
+                    AND u.IsDeleted = FALSE
+                """);
 
         params.add(userId);
 
@@ -524,13 +556,13 @@ public class UserServiceImpl implements UserService {
         String countSql = "SELECT COUNT(*) FROM (" + sqlBuilder.toString() + ") AS t";
         Long totalCount = jdbcTemplate.queryForObject(countSql, Long.class, params.toArray());
 
-        if (totalCount == null || totalCount == 0) {
+        if (totalCount == null || totalCount == 0L) {
             // 没有关注的用户或没有符合条件的食谱
             return PageResult.<FeedItem>builder()
                     .items(Collections.emptyList())
                     .page(page)
                     .size(size)
-                    .total(0)
+                    .total(0L)
                     .build();
         }
 
@@ -540,18 +572,62 @@ public class UserServiceImpl implements UserService {
         params.add(size);
         params.add(offset);
 
-        // 6. 执行查询
+        // 6. 执行查询（保持 null 语义）
         List<FeedItem> feedItems = jdbcTemplate.query(sqlBuilder.toString(), new RowMapper<FeedItem>() {
             @Override
             public FeedItem mapRow(ResultSet rs, int rowNum) throws SQLException {
+                Timestamp ts = rs.getTimestamp("DatePublished");
+                Instant datePublished = null;
+                if (ts != null) {
+                    // Treat the DB timestamp as a wall-clock (no timezone compensation):
+                    // convert to LocalDateTime and then to Instant using the system default zone.
+                    // This preserves the literal date/time stored in DB instead of shifting by the JVM/driver timezone.
+                    datePublished = ts.toLocalDateTime().atZone(ZoneId.of("UTC")).toInstant();
+                }
+
+                Double aggregatedRating = null;
+                Object aggObj = null;
+                try {
+                    aggObj = rs.getObject("AggregatedRating");
+                } catch (SQLException ignore) {
+                }
+                if (aggObj != null) {
+                    if (aggObj instanceof Number) {
+                        aggregatedRating = ((Number) aggObj).doubleValue();
+                    } else {
+                        try {
+                            aggregatedRating = Double.parseDouble(String.valueOf(aggObj));
+                        } catch (Exception ignore) {
+                        }
+                    }
+                }
+
+                Integer reviewCount = null;
+                Object revObj = null;
+                try {
+                    revObj = rs.getObject("ReviewCount");
+                } catch (SQLException ignore) {
+                }
+                if (revObj != null) {
+                    if (revObj instanceof Number) {
+                        reviewCount = ((Number) revObj).intValue();
+                    } else {
+                        try {
+                            reviewCount = Integer.parseInt(String.valueOf(revObj));
+                        } catch (Exception ignore) {
+                        }
+                    }
+                }
+
+//                log.debug("FeedItem DatePublished: init:{}, instant{}", ts.getTime(), datePublished.);
                 return FeedItem.builder()
                         .recipeId(rs.getLong("RecipeId"))
                         .name(rs.getString("Name"))
                         .authorId(rs.getLong("AuthorId"))
                         .authorName(rs.getString("AuthorName"))
-                        .datePublished(rs.getTimestamp("DatePublished").toInstant())
-                        .aggregatedRating(rs.getDouble("AggregatedRating"))
-                        .reviewCount(rs.getInt("ReviewCount"))
+                        .datePublished(datePublished)
+                        .aggregatedRating(aggregatedRating)
+                        .reviewCount(reviewCount)
                         .build();
             }
         }, params.toArray());
@@ -569,49 +645,49 @@ public class UserServiceImpl implements UserService {
     public Map<String, Object> getUserWithHighestFollowRatio() {
         // 使用SQL直接计算比率并找出最高的
         String sql = """
-            WITH user_stats AS (
-                SELECT 
-                    u.AuthorId,
-                    u.AuthorName,
-                    COALESCE(followers.count, 0) AS follower_count,
-                    COALESCE(following.count, 0) AS following_count
-                FROM users u
-                LEFT JOIN (
-                    SELECT FollowingId, COUNT(*) as count
-                    FROM user_follows
-                    GROUP BY FollowingId
-                ) followers ON u.AuthorId = followers.FollowingId
-                LEFT JOIN (
-                    SELECT FollowerId, COUNT(*) as count
-                    FROM user_follows
-                    GROUP BY FollowerId
-                ) following ON u.AuthorId = following.FollowerId
-                WHERE u.IsDeleted = FALSE
-            ),
-            eligible_users AS (
-                SELECT 
-                    AuthorId,
-                    AuthorName,
-                    follower_count,
-                    following_count,
-                    CASE 
-                        WHEN following_count > 0 THEN follower_count * 1.0 / following_count
-                        ELSE NULL
-                    END AS ratio
-                FROM user_stats
-                WHERE following_count > 0
-            )
-            SELECT 
-                AuthorId,
-                AuthorName,
-                follower_count,
-                following_count,
-                ratio
-            FROM eligible_users
-            WHERE ratio IS NOT NULL
-            ORDER BY ratio DESC, AuthorId ASC
-            LIMIT 1
-        """;
+                    WITH user_stats AS (
+                        SELECT 
+                            u.AuthorId,
+                            u.AuthorName,
+                            COALESCE(followers.count, 0) AS follower_count,
+                            COALESCE(following.count, 0) AS following_count
+                        FROM users u
+                        LEFT JOIN (
+                            SELECT FollowingId, COUNT(*) as count
+                            FROM user_follows
+                            GROUP BY FollowingId
+                        ) followers ON u.AuthorId = followers.FollowingId
+                        LEFT JOIN (
+                            SELECT FollowerId, COUNT(*) as count
+                            FROM user_follows
+                            GROUP BY FollowerId
+                        ) following ON u.AuthorId = following.FollowerId
+                        WHERE u.IsDeleted = FALSE
+                    ),
+                    eligible_users AS (
+                        SELECT 
+                            AuthorId,
+                            AuthorName,
+                            follower_count,
+                            following_count,
+                            CASE 
+                                WHEN following_count > 0 THEN follower_count * 1.0 / following_count
+                                ELSE NULL
+                            END AS ratio
+                        FROM user_stats
+                        WHERE following_count > 0
+                    )
+                    SELECT 
+                        AuthorId,
+                        AuthorName,
+                        follower_count,
+                        following_count,
+                        ratio
+                    FROM eligible_users
+                    WHERE ratio IS NOT NULL
+                    ORDER BY ratio DESC, AuthorId ASC
+                    LIMIT 1
+                """;
 
         try {
             Map<String, Object> result = jdbcTemplate.queryForMap(sql);
@@ -620,7 +696,7 @@ public class UserServiceImpl implements UserService {
             Map<String, Object> formattedResult = new HashMap<>();
             formattedResult.put("AuthorId", result.get("authorid"));
             formattedResult.put("AuthorName", result.get("authorname"));
-            formattedResult.put("Ratio", result.get("ratio"));
+            formattedResult.put("Ratio", ((Number) result.get("ratio")).doubleValue());
 
             return formattedResult;
 

@@ -92,6 +92,7 @@ public class DatabaseServiceImpl implements DatabaseService {
                     }
             );
         }
+
         //重新遍历user表，完成following与follower关联表
         List<Object[]> followArgs = new ArrayList<>();
         Set<String> seenFollows = new HashSet<>();
@@ -130,6 +131,25 @@ public class DatabaseServiceImpl implements DatabaseService {
                 followArgs.clear();
             }
         }
+        // 插入剩余的
+        if (!followArgs.isEmpty()) {
+            jdbcTemplate.batchUpdate(
+                    "INSERT INTO user_follows (FollowerId, FollowingId) VALUES (?, ?)",
+                    followArgs
+            );
+        }
+
+        // After importing follow relations, ensure users.Followers and users.Following reflect the actual relations
+        try {
+            String updateCountsSql = """
+                UPDATE users u
+                SET Followers = COALESCE((SELECT COUNT(*) FROM user_follows uf WHERE uf.FollowingId = u.AuthorId), 0),
+                    Following = COALESCE((SELECT COUNT(*) FROM user_follows uf WHERE uf.FollowerId = u.AuthorId), 0)
+            """;
+            jdbcTemplate.update(updateCountsSql);
+        } catch (Exception e) {
+            log.warn("Failed to refresh user follow counts after import: {}", e.getMessage());
+        }
 
         //食谱表
         for (int i = 0; i < recipeRecords.size(); i += BATCH_SIZE) {
@@ -137,7 +157,7 @@ public class DatabaseServiceImpl implements DatabaseService {
             List<RecipeRecord> batch = recipeRecords.subList(i, end);
             // 执行当前批次的插入：插入 recipes 表
             jdbcTemplate.batchUpdate(
-                    "INSERT INTO recipes (RecipeId, Name, AuthorId, AuthorName, CookTime, PrepTime, TotalTime, DatePublished, Description, RecipeCategory, AggregatedRating, ReviewCount, Calories, FatContent, SaturatedFatContent, CholesterolContent, SodiumContent, CarbohydrateContent, FiberContent, SugarContent, ProteinContent, RecipeServings, RecipeYield) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO recipes (RecipeId, Name, AuthorId, CookTime, PrepTime, TotalTime, DatePublished, Description, RecipeCategory, AggregatedRating, ReviewCount, Calories, FatContent, SaturatedFatContent, CholesterolContent, SodiumContent, CarbohydrateContent, FiberContent, SugarContent, ProteinContent, RecipeServings, RecipeYield) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     new BatchPreparedStatementSetter() {
                         @Override
                         public void setValues(@NonNull PreparedStatement ps, @NonNull int index) throws SQLException {
@@ -145,31 +165,31 @@ public class DatabaseServiceImpl implements DatabaseService {
                             ps.setLong(1, recipe.getRecipeId());
                             ps.setString(2, recipe.getName());
                             ps.setLong(3, recipe.getAuthorId());
-                            ps.setString(4, recipe.getAuthorName());
-                            ps.setString(5, recipe.getCookTime());
-                            ps.setString(6, recipe.getPrepTime());
-                            ps.setString(7, recipe.getTotalTime());
+                            //ps.setString(4, recipe.getAuthorName());
+                            ps.setString(4, recipe.getCookTime());
+                            ps.setString(5, recipe.getPrepTime());
+                            ps.setString(6, recipe.getTotalTime());
                             // datePublished may be null
                             if (recipe.getDatePublished() != null) {
-                                ps.setTimestamp(8, recipe.getDatePublished());
+                                ps.setTimestamp(7, recipe.getDatePublished());
                             } else {
-                                ps.setNull(8, java.sql.Types.TIMESTAMP);
+                                ps.setNull(7, java.sql.Types.TIMESTAMP);
                             }
-                            ps.setString(9, recipe.getDescription());
-                            ps.setString(10, recipe.getRecipeCategory());
-                            ps.setFloat(11, recipe.getAggregatedRating());
-                            ps.setInt(12, recipe.getReviewCount());
-                            ps.setFloat(13, recipe.getCalories());
-                            ps.setFloat(14, recipe.getFatContent());
-                            ps.setFloat(15, recipe.getSaturatedFatContent());
-                            ps.setFloat(16, recipe.getCholesterolContent());
-                            ps.setFloat(17, recipe.getSodiumContent());
-                            ps.setFloat(18, recipe.getCarbohydrateContent());
-                            ps.setFloat(19, recipe.getFiberContent());
-                            ps.setFloat(20, recipe.getSugarContent());
-                            ps.setFloat(21, recipe.getProteinContent());
-                            ps.setInt(22, recipe.getRecipeServings());
-                            ps.setString(23, recipe.getRecipeYield());
+                            ps.setString(8, recipe.getDescription());
+                            ps.setString(9, recipe.getRecipeCategory());
+                            ps.setFloat(10, recipe.getAggregatedRating());
+                            ps.setInt(11, recipe.getReviewCount());
+                            ps.setFloat(12, recipe.getCalories());
+                            ps.setFloat(13, recipe.getFatContent());
+                            ps.setFloat(14, recipe.getSaturatedFatContent());
+                            ps.setFloat(15, recipe.getCholesterolContent());
+                            ps.setFloat(16, recipe.getSodiumContent());
+                            ps.setFloat(17, recipe.getCarbohydrateContent());
+                            ps.setFloat(18, recipe.getFiberContent());
+                            ps.setFloat(19, recipe.getSugarContent());
+                            ps.setFloat(20, recipe.getProteinContent());
+                            ps.setInt(21, recipe.getRecipeServings());
+                            ps.setString(22, recipe.getRecipeYield());
                         }
 
                         @Override
@@ -180,80 +200,103 @@ public class DatabaseServiceImpl implements DatabaseService {
             );
 
             // 为当前批次收集所有配料并批量插入 recipe_ingredients 表
+            // 防止因重复配料导致主键(RecipeId, IngredientPart)冲突：
+            // 1) 在内存中去重同一批次中的(RecipeId, IngredientPart)
+            // 2) 使用 PostgreSQL 的 ON CONFLICT DO NOTHING 忽略已存在的记录（对并发也更安全）
             List<Object[]> ingredientArgs = new ArrayList<>();
+            Set<String> seenIngredientPairs = new HashSet<>();
             for (RecipeRecord recipe : batch) {
                 String[] parts = recipe.getRecipeIngredientParts();
                 if (parts == null) continue;
                 for (String part : parts) {
-                    ingredientArgs.add(new Object[]{recipe.getRecipeId(), part});
+                    if (part == null) continue;
+                    String normalized = part.trim();
+                    String key = recipe.getRecipeId() + "|" + normalized.toLowerCase();
+                    if (seenIngredientPairs.add(key)) {
+                        ingredientArgs.add(new Object[]{recipe.getRecipeId(), normalized});
+                    }
                 }
                 if (ingredientArgs.size() >= BATCH_SIZE) {
-                    // 批量插入 recipe_ingredients 表
+                    // 批量插入 recipe_ingredients 表，遇到重复主键则忽略（Postgres）
                     jdbcTemplate.batchUpdate(
-                            "INSERT INTO recipe_ingredients (RecipeId, IngredientPart) VALUES (?, ?)",
+                            "INSERT INTO recipe_ingredients (RecipeId, IngredientPart) VALUES (?, ?) ON CONFLICT DO NOTHING",
                             ingredientArgs
                     );
                     ingredientArgs.clear();
                 }
             }
-
-            //评论表
-            for (int j = 0; j < reviewRecords.size(); j += BATCH_SIZE) {
-                int endJ = Math.min(j + BATCH_SIZE, reviewRecords.size());
-                List<ReviewRecord> reviewBatch = reviewRecords.subList(j, endJ);
-                // 执行当前批次的插入
+            // 插入剩余的
+            if (!ingredientArgs.isEmpty()) {
                 jdbcTemplate.batchUpdate(
-                        "INSERT INTO reviews (ReviewId, RecipeId, AuthorId, Rating, Review, DateSubmitted, DateModified) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        new BatchPreparedStatementSetter() {
-                            @Override
-                            public void setValues(@NonNull PreparedStatement ps, @NonNull int index) throws SQLException {
-                                ReviewRecord review = reviewBatch.get(index);
-                                ps.setLong(1, review.getReviewId());
-                                ps.setLong(2, review.getRecipeId());
-                                ps.setLong(3, review.getAuthorId());
-                                ps.setFloat(4, review.getRating());
-                                ps.setString(5, review.getReview());
-                                // dateSubmitted may be null
-                                if (review.getDateSubmitted() != null) {
-                                    ps.setTimestamp(6, review.getDateSubmitted());
-                                } else {
-                                    ps.setNull(6, java.sql.Types.TIMESTAMP);
-                                }
-                                // dateModified may be null
-                                if (review.getDateModified() != null) {
-                                    ps.setTimestamp(7, review.getDateModified());
-                                } else {
-                                    ps.setNull(7, java.sql.Types.TIMESTAMP);
-                                }
-                            }
-
-                            @Override
-                            public int getBatchSize() {
-                                return reviewBatch.size();
-                            }
-                        }
+                        "INSERT INTO recipe_ingredients (RecipeId, IngredientPart) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                        ingredientArgs
                 );
             }
-            // 为当前批次收集所有评论点赞并批量插入 review_likes 表
-            List<Object[]> likeArgs = new ArrayList<>();
-            for (ReviewRecord review : reviewRecords) {
-                long reviewId = review.getReviewId();
-                long[] likes = review.getLikes();
-                if (likes == null) continue;
-                for (long authorId : likes) {
-                    likeArgs.add(new Object[]{reviewId, authorId});
-                }
-                if (likeArgs.size() >= BATCH_SIZE) {
-                    // 批量插入 review_likes 表
-                    jdbcTemplate.batchUpdate(
-                            "INSERT INTO review_likes (ReviewId, AuthorId) VALUES (?, ?)",
-                            likeArgs
-                    );
-                    likeArgs.clear();
-                }
+        }
+        //评论表
+        for (int j = 0; j < reviewRecords.size(); j += BATCH_SIZE) {
+            int endJ = Math.min(j + BATCH_SIZE, reviewRecords.size());
+            List<ReviewRecord> reviewBatch = reviewRecords.subList(j, endJ);
+            // 执行当前批次的插入
+            jdbcTemplate.batchUpdate(
+                    "INSERT INTO reviews (ReviewId, RecipeId, AuthorId, Rating, Review, DateSubmitted, DateModified) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    new BatchPreparedStatementSetter() {
+                        @Override
+                        public void setValues(@NonNull PreparedStatement ps, @NonNull int index) throws SQLException {
+                            ReviewRecord review = reviewBatch.get(index);
+                            ps.setLong(1, review.getReviewId());
+                            ps.setLong(2, review.getRecipeId());
+                            ps.setLong(3, review.getAuthorId());
+                            ps.setFloat(4, review.getRating());
+                            ps.setString(5, review.getReview());
+                            // dateSubmitted may be null
+                            if (review.getDateSubmitted() != null) {
+                                ps.setTimestamp(6, review.getDateSubmitted());
+                            } else {
+                                ps.setNull(6, java.sql.Types.TIMESTAMP);
+                            }
+                            // dateModified may be null
+                            if (review.getDateModified() != null) {
+                                ps.setTimestamp(7, review.getDateModified());
+                            } else {
+                                ps.setNull(7, java.sql.Types.TIMESTAMP);
+                            }
+                        }
+
+                        @Override
+                        public int getBatchSize() {
+                            return reviewBatch.size();
+                        }
+                    }
+            );
+        }
+        // 为当前批次收集所有评论点赞并批量插入 review_likes 表
+        List<Object[]> likeArgs = new ArrayList<>();
+        for (ReviewRecord review : reviewRecords) {
+            long reviewId = review.getReviewId();
+            long[] likes = review.getLikes();
+            if (likes == null) continue;
+            for (long authorId : likes) {
+                likeArgs.add(new Object[]{reviewId, authorId});
+            }
+            if (likeArgs.size() >= BATCH_SIZE) {
+                // 批量插入 review_likes 表
+                jdbcTemplate.batchUpdate(
+                        "INSERT INTO review_likes (ReviewId, AuthorId) VALUES (?, ?)",
+                        likeArgs
+                );
+                likeArgs.clear();
             }
         }
+        // 插入剩余的
+        if (!likeArgs.isEmpty()) {
+            jdbcTemplate.batchUpdate(
+                    "INSERT INTO review_likes (ReviewId, AuthorId) VALUES (?, ?)",
+                    likeArgs
+            );
+        }
     }
+
 
     private void createTables() {
         String[] createTableSQLs = {

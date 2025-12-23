@@ -20,6 +20,8 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
@@ -53,7 +55,7 @@ public class RecipeServiceImpl implements RecipeService {
         String ingredientStr = rs.getString("ingredientParts");
         if (ingredientStr != null && !ingredientStr.isEmpty()) {
             // Assuming ingredients are stored as comma-separated string in the query
-            record.setRecipeIngredientParts(ingredientStr.split(","));
+            record.setRecipeIngredientParts(ingredientStr.split(">"));
         } else {
             record.setRecipeIngredientParts(new String[0]);
         }
@@ -99,11 +101,11 @@ public class RecipeServiceImpl implements RecipeService {
             // 获取食谱基本信息
             String sql = """
                 SELECT r.*, u.authorName,
-                       STRING_AGG(ri.IngredientPart, ',' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
+                       STRING_AGG(ri.IngredientPart, '>' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
                 FROM recipes r
                 LEFT JOIN users u ON r.authorId = u.authorId
                 LEFT JOIN recipe_ingredients ri ON r.RecipeId = ri.RecipeId
-                WHERE r.RecipeId = ? AND u.isDeleted = false
+                WHERE r.RecipeId = ?
                 GROUP BY r.RecipeId, u.authorName
                 """;
 
@@ -117,18 +119,18 @@ public class RecipeServiceImpl implements RecipeService {
     public PageResult<RecipeRecord> searchRecipes(String keyword, String category, Double minRating,
                                                   Integer page, Integer size, String sort) {
         // 参数验证
-        if (page == null || page < 1) page = 1;
-        if (size == null || size <= 0) size = 10;
-        if (size > 200) size = 200; // 限制最大页面大小
+        if(page<1 || size<=0) {
+            throw new IllegalArgumentException("Invalid page or size parameters");
+        }
 
         // 构建基础查询
         StringBuilder sql = new StringBuilder("""
             SELECT r.*, u.authorName,
-                   STRING_AGG(ri.IngredientPart, ',' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
+                   STRING_AGG(ri.IngredientPart, '>' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
             FROM recipes r
             LEFT JOIN users u ON r.authorId = u.authorId
-            LEFT JOIN recipe_ingredients ri ON r.RecipeId = ri.RecipeId
-            WHERE u.isDeleted = false
+            LEFT JOIN recipe_ingredients ri ON r.RecipeId = ri.recipeId
+            WHERE 1=1
             """);
 
         List<Object> params = new ArrayList<>();
@@ -157,25 +159,47 @@ public class RecipeServiceImpl implements RecipeService {
         if (StringUtils.hasText(sort)) {
             switch (sort) {
                 case "rating_desc":
-                    sql.append(" ORDER BY r.aggregatedRating DESC NULLS LAST");
+                    sql.append(" ORDER BY r.aggregatedRating DESC, RecipeId DESC");
                     break;
                 case "date_desc":
-                    sql.append(" ORDER BY r.datePublished DESC");
+                    sql.append(" ORDER BY r.datePublished DESC, RecipeId DESC");
                     break;
                 case "calories_asc":
-                    sql.append(" ORDER BY r.calories ASC NULLS LAST");
+                    sql.append(" ORDER BY r.calories ASC NULLS LAST, RecipeId DESC");
                     break;
                 default:
                     // 默认按发布日期降序
-                    sql.append(" ORDER BY r.datePublished DESC");
+                    sql.append(" ORDER BY r.datePublished DESC, RecipeId DESC");
             }
         } else {
-            sql.append(" ORDER BY r.datePublished DESC");
+            sql.append(" ORDER BY r.datePublished DESC, RecipeId DESC");
         }
 
-        // 计算总记录数
-        String countSql = "SELECT COUNT(*) FROM (" + sql.toString().replaceFirst("SELECT r.*, u.authorName.*", "SELECT 1") + ") as t";
-        long total = jdbcTemplate.queryForObject(countSql, Long.class, params.toArray());
+        // 计算总记录数：从构造的查询中提取 FROM ... 子句（直到 GROUP BY/ORDER BY/LIMIT）
+        // 并使用 COUNT(DISTINCT r.RecipeId) 防止因 JOIN 导致重复计数。
+        String sqlStr = sql.toString();
+        String lower = sqlStr.toLowerCase();
+        int fromIdx = lower.indexOf("from recipes r");
+        int groupByIdx = lower.indexOf("group by", fromIdx >= 0 ? fromIdx : 0);
+        int orderByIdx = lower.indexOf("order by", fromIdx >= 0 ? fromIdx : 0);
+        int limitIdx = lower.indexOf("limit", fromIdx >= 0 ? fromIdx : 0);
+
+        int cutIdx = sqlStr.length();
+        if (groupByIdx >= 0 && groupByIdx < cutIdx) cutIdx = groupByIdx;
+        if (orderByIdx >= 0 && orderByIdx < cutIdx) cutIdx = orderByIdx;
+        if (limitIdx >= 0 && limitIdx < cutIdx) cutIdx = limitIdx;
+
+        String countSql;
+        if (fromIdx >= 0) {
+            String fromToCut = sqlStr.substring(fromIdx, cutIdx);
+            countSql = "SELECT COUNT(DISTINCT r.RecipeId) " + fromToCut;
+        } else {
+            // 如果未找到预期的 FROM 子句，回退为简单安全计数
+            countSql = "SELECT COUNT(DISTINCT r.RecipeId) FROM recipes r LEFT JOIN users u ON r.authorId = u.authorId";
+        }
+
+        Long totalObj = jdbcTemplate.queryForObject(countSql, Long.class, params.toArray());
+        long total = totalObj != null ? totalObj : 0L;
 
         // 添加分页
         sql.append(" LIMIT ? OFFSET ?");
@@ -337,26 +361,26 @@ public class RecipeServiceImpl implements RecipeService {
             throw new SecurityException("Only recipe author can update times");
         }
 
-        // 解析并验证时间格式
+        // 解析并验证时间格式（使用更宽松的解析器，支持 ISO-8601 以及常见人类友好格式）
         Duration cookDuration = null;
         Duration prepDuration = null;
 
         try {
             if (cookTimeIso != null) {
-                cookDuration = Duration.parse(cookTimeIso);
+                cookDuration = parseDurationLenient(cookTimeIso);
                 if (cookDuration.isNegative()) {
                     throw new IllegalArgumentException("Cook time cannot be negative");
                 }
             }
 
             if (prepTimeIso != null) {
-                prepDuration = Duration.parse(prepTimeIso);
+                prepDuration = parseDurationLenient(prepTimeIso);
                 if (prepDuration.isNegative()) {
                     throw new IllegalArgumentException("Prep time cannot be negative");
                 }
             }
-        } catch (DateTimeParseException e) {
-            throw new IllegalArgumentException("Invalid ISO 8601 duration format: " + e.getMessage());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid duration format: " + e.getMessage());
         }
 
         // 构建更新SQL
@@ -380,10 +404,13 @@ public class RecipeServiceImpl implements RecipeService {
             String currentCookTimeSql = "SELECT cookTime, prepTime FROM recipes WHERE RecipeId = ?";
             Map<String, Object> currentTimes = jdbcTemplate.queryForMap(currentCookTimeSql, recipeId);
 
-            Duration currentCook = currentTimes.get("cookTime") != null ?
-                    Duration.parse((String) currentTimes.get("cookTime")) : Duration.ZERO;
-            Duration currentPrep = currentTimes.get("prepTime") != null ?
-                    Duration.parse((String) currentTimes.get("prepTime")) : Duration.ZERO;
+            Object currentCookObj = currentTimes.get("cookTime");
+            Object currentPrepObj = currentTimes.get("prepTime");
+            String currentCookStr = currentCookObj != null ? currentCookObj.toString() : null;
+            String currentPrepStr = currentPrepObj != null ? currentPrepObj.toString() : null;
+
+            Duration currentCook = currentCookStr != null ? safeParseDurationOrZero(currentCookStr) : Duration.ZERO;
+            Duration currentPrep = currentPrepStr != null ? safeParseDurationOrZero(currentPrepStr) : Duration.ZERO;
 
             Duration newCook = cookDuration != null ? cookDuration : currentCook;
             Duration newPrep = prepDuration != null ? prepDuration : currentPrep;
@@ -414,13 +441,13 @@ public class RecipeServiceImpl implements RecipeService {
             ),
             pairs AS (
                 SELECT
-                    r1.RecipeId AS recipe_a,
-                    r2.RecipeId AS recipe_b,
-                    r1.calories AS calories_a,
-                    r2.calories AS calories_b,
+                    r1.RecipeId AS RecipeA,
+                    r2.RecipeId AS RecipeB,
+                    r1.calories AS CaloriesA,
+                    r2.calories AS CaloriesB,
                     r1.name AS name_a,
                     r2.name AS name_b,
-                    ABS(r1.calories - r2.calories) AS difference,
+                    ABS(r1.calories - r2.calories) AS Difference,
                     ROW_NUMBER() OVER (
                         ORDER BY ABS(r1.calories - r2.calories),
                                  LEAST(r1.RecipeId, r2.RecipeId),
@@ -430,13 +457,20 @@ public class RecipeServiceImpl implements RecipeService {
                 CROSS JOIN recipe_calories r2
                 WHERE r1.RecipeId < r2.RecipeId  -- 避免重复对和自配对
             )
-            SELECT recipe_a, recipe_b, calories_a, calories_b, difference
+            SELECT RecipeA, RecipeB, CaloriesA, CaloriesB, Difference
             FROM pairs
             WHERE rn = 1
             """;
 
         try {
-            return jdbcTemplate.queryForMap(sql);
+            Map<String, Object> temp = jdbcTemplate.queryForMap(sql);
+            Map<String, Object> result = new HashMap<>();
+            result.put("RecipeA", temp.get("recipea"));
+            result.put("RecipeB", temp.get("recipeb"));
+            result.put("CaloriesA", ((Number)temp.get("caloriesa")).doubleValue());
+            result.put("CaloriesB", ((Number)temp.get("caloriesb")).doubleValue());
+            result.put("Difference", ((Number)temp.get("difference")).doubleValue());
+            return result;
         } catch (EmptyResultDataAccessException e) {
             // 少于2个有卡路里值的食谱
             return null;
@@ -465,27 +499,81 @@ public class RecipeServiceImpl implements RecipeService {
             Map<String, Object> formatted = new LinkedHashMap<>();
             formatted.put("RecipeId", row.get("RecipeId"));
             formatted.put("Name", row.get("Name"));
-            formatted.put("IngredientCount", row.get("IngredientCount"));
+            formatted.put("IngredientCount", ((Long)row.get("IngredientCount")).intValue());
             formattedResults.add(formatted);
         }
 
         return formattedResults;
     }
 
-    // 辅助方法：验证ISO 8601持续时间格式
-    private boolean isValidISODuration(String duration) {
+    // 辅助方法：宽松解析持续时间（支持 ISO-8601，也支持常见人类可读形式如 "1:30", "1h30m", "90m", "PT1H30M"）
+    private Duration parseDurationLenient(String text) {
+        if (text == null) return null;
+        String s = text.trim();
+        // Try ISO-8601 first
         try {
-            Duration.parse(duration);
-            return true;
-        } catch (DateTimeParseException e) {
-            return false;
+            return Duration.parse(s);
+        } catch (DateTimeParseException ignored) {
+        }
+
+        // Patterns:
+        // HH:MM:SS or H:MM or MM:SS
+        if (s.matches("\\d{1,2}:\\d{1,2}(:\\d{1,2})?")) {
+            String[] parts = s.split(":");
+            if (parts.length == 3) {
+                long h = Long.parseLong(parts[0]);
+                long m = Long.parseLong(parts[1]);
+                long sec = Long.parseLong(parts[2]);
+                return Duration.ofHours(h).plusMinutes(m).plusSeconds(sec);
+            } else if (parts.length == 2) {
+                // interpret as MM:SS -> minutes and seconds
+                long m = Long.parseLong(parts[0]);
+                long sec = Long.parseLong(parts[1]);
+                // If hours-looking (e.g., 1:30 used commonly as 1 minute 30 sec or 1 hour 30?), assume H:MM if first <= 23? Use reasonable heuristic: treat as H:MM if first>59? We'll treat 1:30 as 1 hour 30 minutes.
+                if (Integer.parseInt(parts[0]) <= 23) {
+                    // treat as H:MM
+                    return Duration.ofHours(m).plusMinutes(sec);
+                } else {
+                    // treat as MM:SS
+                    return Duration.ofMinutes(m).plusSeconds(sec);
+                }
+            }
+        }
+
+        // Patterns like "1h30m", "2h", "90m", "45s", with or without spaces
+        Pattern p = Pattern.compile("(?i)\\s*(?:(\\d+)\\s*h(?:ours?)?)?\\s*(?:(\\d+)\\s*m(?:in(?:utes?)?)?)?\\s*(?:(\\d+)\\s*s(?:ec(?:onds?)?)?)?\\s*");
+        Matcher m = p.matcher(s);
+        if (m.matches() && (m.group(1) != null || m.group(2) != null || m.group(3) != null)) {
+            long hours = m.group(1) != null ? Long.parseLong(m.group(1)) : 0L;
+            long mins = m.group(2) != null ? Long.parseLong(m.group(2)) : 0L;
+            long secs = m.group(3) != null ? Long.parseLong(m.group(3)) : 0L;
+            return Duration.ofHours(hours).plusMinutes(mins).plusSeconds(secs);
+        }
+
+        // Simple number: treat as minutes if it's a plain integer (e.g., "90")
+        if (s.matches("\\d+")) {
+            long mins = Long.parseLong(s);
+            return Duration.ofMinutes(mins);
+        }
+
+        throw new IllegalArgumentException("text cannot be parsed to a duration: '" + text + "'");
+    }
+
+    // 辅助方法：解析数据库中的时间字符串，但如果解析失败则返回 Duration.ZERO（更宽容）
+    private Duration safeParseDurationOrZero(String text) {
+        try {
+            Duration d = parseDurationLenient(text);
+            return d != null ? d : Duration.ZERO;
+        } catch (Exception e) {
+            log.warn("Failed to parse duration string '{}', treating as zero: {}", text, e.getMessage());
+            return Duration.ZERO;
         }
     }
 
-    // 辅助方法：计算总时间
+    // 辅助方法：计算总时间（使用宽松解析）
     private String calculateTotalTime(String cookTime, String prepTime) {
-        Duration cook = Duration.parse(cookTime);
-        Duration prep = Duration.parse(prepTime);
+        Duration cook = cookTime != null ? parseDurationLenient(cookTime) : Duration.ZERO;
+        Duration prep = prepTime != null ? parseDurationLenient(prepTime) : Duration.ZERO;
         Duration total = cook.plus(prep);
         return total.toString();
     }

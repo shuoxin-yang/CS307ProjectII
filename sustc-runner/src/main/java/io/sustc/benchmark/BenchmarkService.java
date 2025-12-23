@@ -286,7 +286,9 @@ public class BenchmarkService {
         if (same) {
             pass.incrementAndGet();
         } else {
-            log.debug("Wrong answer.");
+            log.debug(truth.toString());
+            log.debug(res.toString());
+            log.error("Wrong answer.");
         }
         val endTime = System.currentTimeMillis();
 
@@ -304,6 +306,10 @@ public class BenchmarkService {
             for (int i = 0; i < truth.size(); i++) {
                 Map<String, Object> t = truth.get(i);
                 Map<String, Object> r = res.get(i);
+//                log.debug("Expected: {}, Got: {}", t, r);
+//                log.debug("Type of expected: {}, Type of got: {}", t.get("RecipeId").getClass(), r.get("RecipeId").getClass());
+//                log.debug("Type of expected: {}, Type of got: {}", t.get("Name").getClass(), r.get("Name").getClass());
+//                log.debug("Type of expected: {}, Type of got: {}", t.get("IngredientCount").getClass(), r.get("IngredientCount").getClass());
                 boolean same = Objects.equals(t.get("RecipeId"), r.get("RecipeId")) && Objects.equals(t.get("Name"), r.get("Name")) && Objects.equals(t.get("IngredientCount"), r.get("IngredientCount"));
                 if (!same) {
                     allSame = false;
@@ -316,7 +322,7 @@ public class BenchmarkService {
                 log.debug("Wrong answer.");
             }
         } else {
-            log.debug("Wrong answer.");
+            log.error("Wrong answer.");
         }
         val endTime = System.currentTimeMillis();
 
@@ -338,6 +344,7 @@ public class BenchmarkService {
                     if (Objects.equals(recipeService.getRecipeById((long) args[1]), it.getValue()[1])) {
                         pass.incrementAndGet();
                     } else  {
+//                        log.debug("{}",((RecipeRecord)it.getValue()[1]), recipeService.getRecipeById((long) args[1]).getClass());
                         log.debug("Wrong answer: wrong aggregated_rating or review_count for recipe {}", it.getKey()[1]);
                     }
                 } else {
@@ -450,6 +457,7 @@ public class BenchmarkService {
             val args = it.getKey();
             long reviewId = (long) args[1];
             try {
+                log.debug("AuthorInfo: {}", (AuthInfo) args[0]);
                 val res = reviewService.likeReview((AuthInfo) args[0],  reviewId);
                 if (Objects.equals(it.getValue(), res)) {
                     pass.incrementAndGet();
@@ -583,6 +591,7 @@ public class BenchmarkService {
                     log.debug("Wrong result for {}: expected {}, got {}", args, "true or SecurityException", res);
                 }
             } catch (SecurityException e) {
+                //log.debug(e.getMessage());
                 if (Boolean.FALSE.equals(it.getValue())) {
                     pass.incrementAndGet();
                 } else {
@@ -725,6 +734,7 @@ public class BenchmarkService {
         val startTime = System.currentTimeMillis();
         cases.forEach(it -> {
             val args = it.getKey();
+            log.debug("Testing feed with args: {}", Arrays.toString(args));
             try {
                 val res = userService.feed((AuthInfo) args[0], (int) args[1], (int) args[2], (String) args[3]);
                 if (Objects.equals(it.getValue(), res)) {
