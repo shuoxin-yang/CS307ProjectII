@@ -383,16 +383,9 @@ public class RecipeServiceImpl implements RecipeService {
         }
 
         // 3. 要求至少提供一个非 null 参数（接口要求：null 表示不修改）
-        if (cookTimeIso == null && prepTimeIso == null) {
-            throw new IllegalArgumentException("At least one of cookTimeIso or prepTimeIso must be provided");
-        }
-
-        // 3.b 对空字符串做严格校验：null 表示不修改，但空字符串或仅空白视为非法输入
-        if (cookTimeIso != null && cookTimeIso.trim().isEmpty()) {
-            throw new IllegalArgumentException("cookTimeIso must be a non-empty ISO-8601 duration string or null");
-        }
-        if (prepTimeIso != null && prepTimeIso.trim().isEmpty()) {
-            throw new IllegalArgumentException("prepTimeIso must be a non-empty ISO-8601 duration string or null");
+        if ((cookTimeIso == null||cookTimeIso.trim().isEmpty()) && (prepTimeIso == null||prepTimeIso.trim().isEmpty())) {
+            return;
+            //throw new IllegalArgumentException("At least one of cookTimeIso or prepTimeIso must be provided");
         }
 
         // 4. 先解析并验证所有传入的参数（严格 ISO-8601），以避免部分更新
