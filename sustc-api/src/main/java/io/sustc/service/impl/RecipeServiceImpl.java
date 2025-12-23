@@ -54,8 +54,11 @@ public class RecipeServiceImpl implements RecipeService {
         // Get ingredients as array
         String ingredientStr = rs.getString("ingredientParts");
         if (ingredientStr != null && !ingredientStr.isEmpty()) {
-            // Assuming ingredients are stored as comma-separated string in the query
-            record.setRecipeIngredientParts(ingredientStr.split(">"));
+            String[] parts = Arrays.stream(ingredientStr.split(">"))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .toArray(String[]::new);
+            record.setRecipeIngredientParts(parts);
         } else {
             record.setRecipeIngredientParts(new String[0]);
         }
@@ -232,7 +235,19 @@ public class RecipeServiceImpl implements RecipeService {
             throw new IllegalArgumentException("Recipe name cannot be null or empty");
         }
 
-        // 生成新的食谱ID（可以使用序列或最大ID+1）
+        // 验证 cookTime 和 prepTime 必须符合宽松的 ISO-8601 规则（parseDurationLenient）
+        try {
+            if (dto.getCookTime() != null && !dto.getCookTime().trim().isEmpty()) {
+                parseDurationLenient(dto.getCookTime());
+            }
+            if (dto.getPrepTime() != null && !dto.getPrepTime().trim().isEmpty()) {
+                parseDurationLenient(dto.getPrepTime());
+            }
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid cookTime or prepTime format: " + e.getMessage());
+        }
+
+        // 生成新的食谱ID（使用数据库 max+1 策略）
         Long newRecipeId = jdbcTemplate.queryForObject(
                 "SELECT COALESCE(MAX(RecipeId), 0) + 1 FROM recipes", Long.class);
 
@@ -248,6 +263,8 @@ public class RecipeServiceImpl implements RecipeService {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
+        Timestamp datePublished = dto.getDatePublished() != null ? dto.getDatePublished() : Timestamp.from(Instant.now());
+
         jdbcTemplate.update(sql,
                 newRecipeId,
                 dto.getName(),
@@ -255,7 +272,7 @@ public class RecipeServiceImpl implements RecipeService {
                 dto.getCookTime(),
                 dto.getPrepTime(),
                 dto.getTotalTime(),
-                dto.getDatePublished() != null ? Timestamp.from(dto.getDatePublished().toInstant()) : Timestamp.from(Instant.now()),
+                datePublished,
                 dto.getDescription(),
                 dto.getRecipeCategory(),
                 dto.getAggregatedRating(),
@@ -278,7 +295,10 @@ public class RecipeServiceImpl implements RecipeService {
             String insertIngredientSql = "INSERT INTO recipe_ingredients (RecipeId, IngredientPart) VALUES (?, ?)";
 
             List<Object[]> batchArgs = new ArrayList<>();
-            for (String ingredient : dto.getRecipeIngredientParts()) {
+            for (String raw : dto.getRecipeIngredientParts()) {
+                if (raw == null) continue;
+                String ingredient = raw.trim();
+                if (ingredient.isEmpty()) continue;
                 batchArgs.add(new Object[]{newRecipeId, ingredient});
             }
 
@@ -342,92 +362,117 @@ public class RecipeServiceImpl implements RecipeService {
     @Override
     @Transactional
     public void updateTimes(AuthInfo auth, long recipeId, String cookTimeIso, String prepTimeIso) {
-        // 验证用户身份
+        // 1. 验证用户身份
         long userId = userService.login(auth);
         if (userId == -1) {
             throw new SecurityException("Invalid or inactive user");
         }
 
-        // 验证用户是否是食谱作者
-        String checkSql = "SELECT authorId FROM recipes WHERE RecipeId = ?";
-        Long authorId;
+        // 2. 读取并锁定目标食谱行（以防并发），同时获取当前 cookTime/prepTime
+        String selectSql = "SELECT authorId, cookTime, prepTime FROM recipes WHERE RecipeId = ? FOR UPDATE";
+        Map<String, Object> row;
         try {
-            authorId = jdbcTemplate.queryForObject(checkSql, Long.class, recipeId);
+            row = jdbcTemplate.queryForMap(selectSql, recipeId);
         } catch (EmptyResultDataAccessException e) {
             throw new IllegalArgumentException("Recipe not found");
         }
 
-        if (authorId == null || authorId != userId) {
+        Long authorId = row.get("authorid") == null ? null : ((Number) row.get("authorid")).longValue();
+        if (authorId == null || !authorId.equals(userId)) {
             throw new SecurityException("Only recipe author can update times");
         }
 
-        // 解析并验证时间格式（使用更宽松的解析器，支持 ISO-8601 以及常见人类友好格式）
-        Duration cookDuration = null;
-        Duration prepDuration = null;
+        // 3. 要求至少提供一个非 null 参数（接口要求：null 表示不修改）
+        if (cookTimeIso == null && prepTimeIso == null) {
+            throw new IllegalArgumentException("At least one of cookTimeIso or prepTimeIso must be provided");
+        }
 
+        // 3.b 对空字符串做严格校验：null 表示不修改，但空字符串或仅空白视为非法输入
+        if (cookTimeIso != null && cookTimeIso.trim().isEmpty()) {
+            throw new IllegalArgumentException("cookTimeIso must be a non-empty ISO-8601 duration string or null");
+        }
+        if (prepTimeIso != null && prepTimeIso.trim().isEmpty()) {
+            throw new IllegalArgumentException("prepTimeIso must be a non-empty ISO-8601 duration string or null");
+        }
+
+        // 4. 先解析并验证所有传入的参数（严格 ISO-8601），以避免部分更新
+        Duration newCookDuration = null;
+        Duration newPrepDuration = null;
         try {
             if (cookTimeIso != null) {
-                cookDuration = parseDurationLenient(cookTimeIso);
-                if (cookDuration.isNegative()) {
-                    throw new IllegalArgumentException("Cook time cannot be negative");
+                newCookDuration = parseDurationLenient(cookTimeIso);
+                if (newCookDuration == null || newCookDuration.isNegative()) {
+                    throw new IllegalArgumentException("Invalid cookTimeIso: must be a non-negative ISO-8601 duration");
                 }
             }
 
             if (prepTimeIso != null) {
-                prepDuration = parseDurationLenient(prepTimeIso);
-                if (prepDuration.isNegative()) {
-                    throw new IllegalArgumentException("Prep time cannot be negative");
+                newPrepDuration = parseDurationLenient(prepTimeIso);
+                if (newPrepDuration == null || newPrepDuration.isNegative()) {
+                    throw new IllegalArgumentException("Invalid prepTimeIso: must be a non-negative ISO-8601 duration");
                 }
             }
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Invalid duration format: " + e.getMessage());
+        } catch (DateTimeParseException | IllegalArgumentException e) {
+            // 按接口要求：如果 input 无效则抛 IllegalArgumentException 并且不写入任何部分更新
+            throw new IllegalArgumentException(e.getMessage(), e);
         }
 
-        // 构建更新SQL
-        StringBuilder sqlBuilder = new StringBuilder("UPDATE recipes SET ");
+        // 5. 准备用于计算 totalTime 的最终 cook/prep Duration：若参数为 null，则使用数据库中当前值（容错为 0）
+        String currentCookStr = row.get("cooktime") == null ? null : row.get("cooktime").toString();
+        String currentPrepStr = row.get("preptime") == null ? null : row.get("preptime").toString();
+
+        log.debug("Current cookTime in DB for recipe {}: '{}'", recipeId, currentCookStr);
+        log.debug("Current prepTime in DB for recipe {}: '{}'", recipeId, currentPrepStr);
+
+        // If database stored empty or whitespace-only strings, treat them as null (no value)
+        if (currentCookStr != null && currentCookStr.trim().isEmpty()) {
+            log.debug("Recipe {} has empty cookTime in DB; treating as null", recipeId);
+            currentCookStr = null;
+        }
+        if (currentPrepStr != null && currentPrepStr.trim().isEmpty()) {
+            log.debug("Recipe {} has empty prepTime in DB; treating as null", recipeId);
+            currentPrepStr = null;
+        }
+
+        Duration currentCook = safeParseDurationOrZero(currentCookStr);
+        Duration currentPrep = safeParseDurationOrZero(currentPrepStr);
+
+        Duration finalCook = newCookDuration != null ? newCookDuration : currentCook;
+        Duration finalPrep = newPrepDuration != null ? newPrepDuration : currentPrep;
+
+        // 6. 计算 totalTime 并检查溢出（Duration加法不会溢出 for reasonable values, but check for negative)
+        Duration totalDuration;
+        try {
+            totalDuration = finalCook.plus(finalPrep);
+            if (totalDuration.isNegative()) throw new IllegalArgumentException("Total time is negative");
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("Duration overflow when computing total time", e);
+        }
+
+        String totalTimeIso = totalDuration.toString();
+
+        // 7. 构建 UPDATE 语句：只更新传入的字段（cookTime/prepTime）以及 totalTime
+        StringBuilder updateSql = new StringBuilder("UPDATE recipes SET ");
         List<Object> params = new ArrayList<>();
 
         if (cookTimeIso != null) {
-            sqlBuilder.append("cookTime = ?, ");
+            updateSql.append("cookTime = ?, ");
             params.add(cookTimeIso);
         }
-
         if (prepTimeIso != null) {
-            sqlBuilder.append("prepTime = ?, ");
+            updateSql.append("prepTime = ?, ");
             params.add(prepTimeIso);
         }
 
-        // 计算总时间
-        String totalTimeIso = null;
-        if (cookTimeIso != null || prepTimeIso != null) {
-            // 获取当前时间值
-            String currentCookTimeSql = "SELECT cookTime, prepTime FROM recipes WHERE RecipeId = ?";
-            Map<String, Object> currentTimes = jdbcTemplate.queryForMap(currentCookTimeSql, recipeId);
+        // totalTime must always be updated when either cook or prep changes
+        updateSql.append("totalTime = ? ");
+        params.add(totalTimeIso);
 
-            Object currentCookObj = currentTimes.get("cookTime");
-            Object currentPrepObj = currentTimes.get("prepTime");
-            String currentCookStr = currentCookObj != null ? currentCookObj.toString() : null;
-            String currentPrepStr = currentPrepObj != null ? currentPrepObj.toString() : null;
-
-            Duration currentCook = currentCookStr != null ? safeParseDurationOrZero(currentCookStr) : Duration.ZERO;
-            Duration currentPrep = currentPrepStr != null ? safeParseDurationOrZero(currentPrepStr) : Duration.ZERO;
-
-            Duration newCook = cookDuration != null ? cookDuration : currentCook;
-            Duration newPrep = prepDuration != null ? prepDuration : currentPrep;
-
-            Duration total = newCook.plus(newPrep);
-            totalTimeIso = total.toString();
-
-            sqlBuilder.append("totalTime = ?, ");
-            params.add(totalTimeIso);
-        }
-
-        // 移除末尾的逗号和空格
-        sqlBuilder.setLength(sqlBuilder.length() - 2);
-        sqlBuilder.append(" WHERE RecipeId = ?");
+        updateSql.append("WHERE RecipeId = ?");
         params.add(recipeId);
 
-        jdbcTemplate.update(sqlBuilder.toString(), params.toArray());
+        // 8. 执行更新（在同一事务内，已提前验证）
+        jdbcTemplate.update(updateSql.toString(), params.toArray());
     }
 
     @Override
@@ -455,7 +500,7 @@ public class RecipeServiceImpl implements RecipeService {
                     ) as rn
                 FROM recipe_calories r1
                 CROSS JOIN recipe_calories r2
-                WHERE r1.RecipeId < r2.RecipeId  -- 避免重复对和自配对
+                WHERE r1.RecipeId < r2.RecipeId
             )
             SELECT RecipeA, RecipeB, CaloriesA, CaloriesB, Difference
             FROM pairs
@@ -472,7 +517,6 @@ public class RecipeServiceImpl implements RecipeService {
             result.put("Difference", ((Number)temp.get("difference")).doubleValue());
             return result;
         } catch (EmptyResultDataAccessException e) {
-            // 少于2个有卡路里值的食谱
             return null;
         }
     }
@@ -493,7 +537,6 @@ public class RecipeServiceImpl implements RecipeService {
 
         List<Map<String, Object>> results = jdbcTemplate.queryForList(sql);
 
-        // 确保键名符合规范（去掉引号或保持一致性）
         List<Map<String, Object>> formattedResults = new ArrayList<>();
         for (Map<String, Object> row : results) {
             Map<String, Object> formatted = new LinkedHashMap<>();
@@ -506,57 +549,15 @@ public class RecipeServiceImpl implements RecipeService {
         return formattedResults;
     }
 
-    // 辅助方法：宽松解析持续时间（支持 ISO-8601，也支持常见人类可读形式如 "1:30", "1h30m", "90m", "PT1H30M"）
+    // Strict: only accept ISO-8601 duration strings (e.g. PT1H30M). Other common formats are rejected.
     private Duration parseDurationLenient(String text) {
         if (text == null) return null;
         String s = text.trim();
-        // Try ISO-8601 first
         try {
             return Duration.parse(s);
-        } catch (DateTimeParseException ignored) {
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException("Invalid duration format: only ISO-8601 durations like 'PT1H30M' are allowed: '" + text + "'");
         }
-
-        // Patterns:
-        // HH:MM:SS or H:MM or MM:SS
-        if (s.matches("\\d{1,2}:\\d{1,2}(:\\d{1,2})?")) {
-            String[] parts = s.split(":");
-            if (parts.length == 3) {
-                long h = Long.parseLong(parts[0]);
-                long m = Long.parseLong(parts[1]);
-                long sec = Long.parseLong(parts[2]);
-                return Duration.ofHours(h).plusMinutes(m).plusSeconds(sec);
-            } else if (parts.length == 2) {
-                // interpret as MM:SS -> minutes and seconds
-                long m = Long.parseLong(parts[0]);
-                long sec = Long.parseLong(parts[1]);
-                // If hours-looking (e.g., 1:30 used commonly as 1 minute 30 sec or 1 hour 30?), assume H:MM if first <= 23? Use reasonable heuristic: treat as H:MM if first>59? We'll treat 1:30 as 1 hour 30 minutes.
-                if (Integer.parseInt(parts[0]) <= 23) {
-                    // treat as H:MM
-                    return Duration.ofHours(m).plusMinutes(sec);
-                } else {
-                    // treat as MM:SS
-                    return Duration.ofMinutes(m).plusSeconds(sec);
-                }
-            }
-        }
-
-        // Patterns like "1h30m", "2h", "90m", "45s", with or without spaces
-        Pattern p = Pattern.compile("(?i)\\s*(?:(\\d+)\\s*h(?:ours?)?)?\\s*(?:(\\d+)\\s*m(?:in(?:utes?)?)?)?\\s*(?:(\\d+)\\s*s(?:ec(?:onds?)?)?)?\\s*");
-        Matcher m = p.matcher(s);
-        if (m.matches() && (m.group(1) != null || m.group(2) != null || m.group(3) != null)) {
-            long hours = m.group(1) != null ? Long.parseLong(m.group(1)) : 0L;
-            long mins = m.group(2) != null ? Long.parseLong(m.group(2)) : 0L;
-            long secs = m.group(3) != null ? Long.parseLong(m.group(3)) : 0L;
-            return Duration.ofHours(hours).plusMinutes(mins).plusSeconds(secs);
-        }
-
-        // Simple number: treat as minutes if it's a plain integer (e.g., "90")
-        if (s.matches("\\d+")) {
-            long mins = Long.parseLong(s);
-            return Duration.ofMinutes(mins);
-        }
-
-        throw new IllegalArgumentException("text cannot be parsed to a duration: '" + text + "'");
     }
 
     // 辅助方法：解析数据库中的时间字符串，但如果解析失败则返回 Duration.ZERO（更宽容）
@@ -578,3 +579,4 @@ public class RecipeServiceImpl implements RecipeService {
         return total.toString();
     }
 }
+

@@ -144,12 +144,12 @@ public class ReviewServiceImpl implements ReviewService {
                     // 3. 刷新食谱统计（平均分与评论数）
                     refreshRecipeRatingStats(recipeId);
 
-                    log.info("Review {} added for recipe {} by user {}", reviewId, recipeId, auth.getAuthorId());
+//                    log.info("Review {} added for recipe {} by user {}", reviewId, recipeId, auth.getAuthorId());
                     return reviewId;
                 }
             } catch (Exception e) {
                 // 可能是主键冲突或其他原因，记录并重试
-                log.debug("Attempt {} to insert review failed with id {}: {}", attempt + 1, reviewId, e.toString());
+//                log.debug("Attempt {} to insert review failed with id {}: {}", attempt + 1, reviewId, e.toString());
                 try {
                     Thread.sleep(1);
                 } catch (InterruptedException ignored) {
@@ -209,7 +209,7 @@ public class ReviewServiceImpl implements ReviewService {
         // 5. 更新食谱的评分统计
         refreshRecipeRatingStats(recipeId);
 
-        log.info("Review {} edited for recipe {} by user {}", reviewId, recipeId, auth.getAuthorId());
+//        log.info("Review {} edited for recipe {} by user {}", reviewId, recipeId, auth.getAuthorId());
     }
 
     @Override
@@ -254,7 +254,7 @@ public class ReviewServiceImpl implements ReviewService {
         // 6. 更新食谱的评分统计
         refreshRecipeRatingStats(recipeId);
 
-        log.info("Review {} deleted for recipe {} by user {}", reviewId, recipeId, auth.getAuthorId());
+//        log.info("Review {} deleted for recipe {} by user {}", reviewId, recipeId, auth.getAuthorId());
     }
 
     @Override
@@ -291,7 +291,7 @@ public class ReviewServiceImpl implements ReviewService {
                 jdbcTemplate.update(insertLikeSql, reviewId, auth.getAuthorId());
             } catch (Exception e) {
                 // 如果违反了唯一约束，说明已经点过赞了（并发情况）
-                log.debug("Like already exists for review {} by user {}", reviewId, auth.getAuthorId());
+//                log.debug("Like already exists for review {} by user {}", reviewId, auth.getAuthorId());
             }
         }
 
@@ -299,7 +299,7 @@ public class ReviewServiceImpl implements ReviewService {
         String countSql = "SELECT COUNT(*) FROM review_likes WHERE ReviewId = ?";
         Long likeCount = jdbcTemplate.queryForObject(countSql, Long.class, reviewId);
 
-        log.info("Review {} liked by user {}, total likes: {}", reviewId, auth.getAuthorId(), likeCount);
+//        log.info("Review {} liked by user {}, total likes: {}", reviewId, auth.getAuthorId(), likeCount);
         return likeCount != null ? likeCount : 0;
     }
 
@@ -329,7 +329,7 @@ public class ReviewServiceImpl implements ReviewService {
         String countSql = "SELECT COUNT(*) FROM review_likes WHERE ReviewId = ?";
         Long likeCount = jdbcTemplate.queryForObject(countSql, Long.class, reviewId);
 
-        log.info("Review {} unliked by user {}, total likes: {}", reviewId, auth.getAuthorId(), likeCount);
+//        log.info("Review {} unliked by user {}, total likes: {}", reviewId, auth.getAuthorId(), likeCount);
         return likeCount != null ? likeCount : 0;
     }
 

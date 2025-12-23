@@ -83,13 +83,13 @@ public class UserServiceImpl implements UserService {
     public long register(RegisterUserReq req) {
         // 1. 检查必要字段
         if (req == null || req.getName() == null || req.getName().trim().isEmpty()) {
-            log.warn("Registration failed: username is null or empty");
+//            log.warn("Registration failed: username is null or empty");
             return -1;
         }
 
         // 2. 检查性别
         if (req.getGender() == null) {
-            log.warn("Registration failed: gender is null");
+//            log.warn("Registration failed: gender is null");
             return -1;
         }
 
@@ -102,13 +102,13 @@ public class UserServiceImpl implements UserService {
                 gender = "Female";
                 break;
             default:
-                log.warn("Registration failed: invalid gender value");
+//                log.warn("Registration failed: invalid gender value");
                 return -1;
         }
 
         // 3. 检查年龄（从生日计算）
         if (req.getBirthday() == null || req.getBirthday().trim().isEmpty()) {
-            log.warn("Registration failed: birthday is null or empty");
+//            log.warn("Registration failed: birthday is null or empty");
             return -1;
         }
 
@@ -116,17 +116,17 @@ public class UserServiceImpl implements UserService {
         try {
             age = calculateAge(req.getBirthday());
             if (age <= 0) {
-                log.warn("Registration failed: invalid age calculated: {}", age);
+//                log.warn("Registration failed: invalid age calculated: {}", age);
                 return -1;
             }
         } catch (IllegalArgumentException e) {
-            log.warn("Registration failed: invalid birthday format: {}", req.getBirthday());
+//            log.warn("Registration failed: invalid birthday format: {}", req.getBirthday());
             return -1;
         }
 
         // 4. 检查用户名是否已存在
         if (isUsernameExists(req.getName())) {
-            log.warn("Registration failed: username already exists: {}", req.getName());
+//            log.warn("Registration failed: username already exists: {}", req.getName());
             return -1;
         }
 
@@ -151,12 +151,12 @@ public class UserServiceImpl implements UserService {
             try {
                 int result = jdbcTemplate.update(insertSql, authorId, req.getName(), gender, age, req.getPassword());
                 if (result > 0) {
-                    log.info("User registered successfully: {} (ID: {})", req.getName(), authorId);
+//                    log.info("User registered successfully: {} (ID: {})", req.getName(), authorId);
                     return authorId;
                 }
             } catch (Exception e) {
                 // 可能是主键冲突或其他并发插入导致，记录并重试
-                log.debug("Attempt {} to insert user failed with id {}: {}", attempt + 1, authorId, e.toString());
+//                log.debug("Attempt {} to insert user failed with id {}: {}", attempt + 1, authorId, e.toString());
                 try {
                     Thread.sleep(1);
                 } catch (InterruptedException ignored) {
@@ -164,7 +164,7 @@ public class UserServiceImpl implements UserService {
             }
         }
 
-        log.error("Registration failed for user {} after {} attempts", req.getName(), maxAttempts);
+//        log.error("Registration failed for user {} after {} attempts", req.getName(), maxAttempts);
         return -1;
     }
 
@@ -172,12 +172,12 @@ public class UserServiceImpl implements UserService {
     public long login(AuthInfo auth) {
         // 1. 检查参数
         if (auth == null) {
-            log.warn("Login failed: auth is null");
+//            log.warn("Login failed: auth is null");
             return -1;
         }
 
         if (auth.getPassword() == null || auth.getPassword().trim().isEmpty()) {
-            log.warn("Login failed: password is null or empty");
+//            log.warn("Login failed: password is null or empty");
             return -1;
         }
 
@@ -194,24 +194,24 @@ public class UserServiceImpl implements UserService {
             // 3. 检查用户是否被删除
             Boolean isDeleted = (Boolean) user.get("IsDeleted");
             if (isDeleted != null && isDeleted) {
-                log.warn("Login failed: user is soft-deleted: {}", auth.getAuthorId());
+//                log.warn("Login failed: user is soft-deleted: {}", auth.getAuthorId());
                 return -1;
             }
 
             // 4. 验证密码
             String storedPassword = (String) user.get("Password");
             if (storedPassword != null && storedPassword.equals(auth.getPassword())) {
-                log.info("User logged in successfully: {}", auth.getAuthorId());
+//                log.info("User logged in successfully: {}", auth.getAuthorId());
                 return auth.getAuthorId();
             } else {
-                log.warn("Login failed: password mismatch for user: {}", auth.getAuthorId());
+//                log.warn("Login failed: password mismatch for user: {}", auth.getAuthorId());
                 return -1;
             }
         } catch (EmptyResultDataAccessException e) {
-            log.warn("Login failed: user not found: {}", auth.getAuthorId());
+//            log.warn("Login failed: user not found: {}", auth.getAuthorId());
             return -1;
         } catch (Exception e) {
-            log.error("Login error for user: {}", auth.getAuthorId(), e);
+//            log.error("Login error for user: {}", auth.getAuthorId(), e);
             return -1;
         }
     }
@@ -256,7 +256,7 @@ public class UserServiceImpl implements UserService {
         int updated = jdbcTemplate.update(softDeleteSql, userId);
 
         if (updated > 0) {
-            log.info("User account soft-deleted: {}", userId);
+//            log.info("User account soft-deleted: {}", userId);
 
             // 6. 更新受影响用户的关注统计（对收集到的 followersList 与 followingList 做刷新）
             // 使用 updateUserFollowCounts 单个刷新，保持逻辑集中。
@@ -268,7 +268,7 @@ public class UserServiceImpl implements UserService {
                 try {
                     updateUserFollowCounts(affectedUserId);
                 } catch (Exception e) {
-                    log.warn("Failed to update follow counts for user {} after deleting account {}: {}", affectedUserId, userId, e.getMessage());
+//                    log.warn("Failed to update follow counts for user {} after deleting account {}: {}", affectedUserId, userId, e.getMessage());
                 }
             }
 
@@ -278,7 +278,7 @@ public class UserServiceImpl implements UserService {
 
             return true;
         } else {
-            log.warn("Soft delete failed for user: {}", userId);
+//            log.warn("Soft delete failed for user: {}", userId);
             return false;
         }
     }
@@ -332,7 +332,7 @@ public class UserServiceImpl implements UserService {
             if (deleted > 0) {
                 result = true;
                 didFollow = false;
-                log.info("User {} unfollowed user {}", followerId, followeeId);
+//                log.info("User {} unfollowed user {}", followerId, followeeId);
             }
         } else {
             // 未关注，执行关注
@@ -341,9 +341,9 @@ public class UserServiceImpl implements UserService {
                 jdbcTemplate.update(followSql, followerId, followeeId);
                 result = true;
                 didFollow = true;
-                log.info("User {} followed user {}", followerId, followeeId);
+//                log.info("User {} followed user {}", followerId, followeeId);
             } catch (Exception e) {
-                log.error("Failed to follow user {} -> {}", followerId, followeeId, e);
+//                log.error("Failed to follow user {} -> {}", followerId, followeeId, e);
                 return false;
             }
         }
@@ -430,10 +430,10 @@ public class UserServiceImpl implements UserService {
             return user;
 
         } catch (EmptyResultDataAccessException e) {
-            log.warn("User not found: {}", userId);
+//            log.warn("User not found: {}", userId);
             return null;
         } catch (Exception e) {
-            log.error("Error getting user by ID: {}", userId, e);
+//            log.error("Error getting user by ID: {}", userId, e);
             return null;
         }
     }
@@ -481,7 +481,7 @@ public class UserServiceImpl implements UserService {
         // 移除最后的逗号和空格
         if (params.isEmpty()) {
             // 没有要更新的字段
-            log.info("No fields to update for user: {}", userId);
+//            log.info("No fields to update for user: {}", userId);
             return;
         }
 
@@ -493,9 +493,9 @@ public class UserServiceImpl implements UserService {
         int updated = jdbcTemplate.update(sqlBuilder.toString(), params.toArray());
 
         if (updated > 0) {
-            log.info("Profile updated for user: {}", userId);
+//            log.info("Profile updated for user: {}", userId);
         } else {
-            log.warn("Profile update failed for user: {}", userId);
+//            log.warn("Profile update failed for user: {}", userId);
             throw new RuntimeException("Failed to update profile");
         }
     }
@@ -702,10 +702,10 @@ public class UserServiceImpl implements UserService {
 
         } catch (EmptyResultDataAccessException e) {
             // 没有符合条件的用户
-            log.info("No eligible user found with following_count > 0");
+//            log.info("No eligible user found with following_count > 0");
             return null;
         } catch (Exception e) {
-            log.error("Error getting user with highest follow ratio", e);
+//            log.error("Error getting user with highest follow ratio", e);
             return null;
         }
     }
