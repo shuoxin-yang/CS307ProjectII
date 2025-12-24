@@ -709,4 +709,20 @@ public class UserServiceImpl implements UserService {
             return null;
         }
     }
+
+    // 前端要求，增加查询特定用户的发布食谱数量
+    public long getUserRecipeCount(long userId) {
+        try {
+            String sql = "SELECT COUNT(*) FROM recipes WHERE AuthorId = ?";
+            Long count = jdbcTemplate.queryForObject(sql, Long.class, userId);
+            return count != null ? count : 0L;
+        } catch (Exception e) {
+            // log error if needed
+            return 0L;
+        }
+    }
+
+    // 前端要求，增加查询特定用户发布的食谱列表
+
+
 }

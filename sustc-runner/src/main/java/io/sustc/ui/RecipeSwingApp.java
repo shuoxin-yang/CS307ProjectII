@@ -1,12 +1,13 @@
+package io.sustc.ui;
+
 import io.sustc.dto.*;
 import io.sustc.service.DatabaseService;
 import io.sustc.service.RecipeService;
 import io.sustc.service.ReviewService;
 import io.sustc.service.UserService;
 import io.sustc.service.impl.RecipeServiceImpl;
-import io.sustc.service.impl.ReviewServiceImpl;
 import io.sustc.service.impl.UserServiceImpl;
-import org.springframework.jdbc.core.JdbcTemplate;
+//import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -27,7 +28,7 @@ public class RecipeSwingApp extends JFrame {
     private UserService userService;
     private RecipeService recipeService;
     private ReviewService reviewService;
-    private JdbcTemplate jdbcTemplate;
+    //private JdbcTemplate jdbcTemplate;
     // 布局管理器
     private CardLayout contentLayout;
     private JPanel contentPanel;
@@ -66,6 +67,25 @@ public class RecipeSwingApp extends JFrame {
         // 加载热门食谱
         loadHotRecipes();
     }
+    public RecipeSwingApp(UserService userService,
+                          RecipeService recipeService,
+                          ReviewService reviewService,
+                          DatabaseService dbService) {
+        this.userService = userService;
+        this.recipeService = recipeService;
+        this.reviewService = reviewService;
+        this.dbService = dbService;
+        // 初始化全局数据
+        initGlobalDate();
+        // 初始化窗口
+        initFrame();
+        // 初始化导航栏
+        initNavbar();
+        // 初始化内容面板（首页+搜索页）
+        initContentPanel();
+        // 加载热门食谱
+        loadHotRecipes();
+    }
 
     // 初始化全局数据
     //测试版
@@ -91,9 +111,6 @@ public class RecipeSwingApp extends JFrame {
 //    }
     //应用版
     private void initGlobalDate(){
-        this.recipeService = new RecipeServiceImpl();
-        this.userService = new UserServiceImpl();
-        this.reviewService = new ReviewServiceImpl();
         // TODO: 加载热门食谱，采用搜索rating方式
         hotRecipes = new ArrayList<RecipeRecord>();
         PageResult<RecipeRecord> result = recipeService.searchRecipes("","",1.0,1,5,"rating_desc");
@@ -229,7 +246,7 @@ public class RecipeSwingApp extends JFrame {
         recipeCountLabel = new JLabel("--");  // 未登录时显示--
 
         JLabel followerCountTitleLabel = new JLabel("粉丝数：");
-        followerCountLabel.setFont(new Font("微软雅黑", Font.BOLD, 16));
+        followerCountTitleLabel.setFont(new Font("微软雅黑", Font.BOLD, 16));
         followerCountLabel = new JLabel("--");  // 未登录时显示--
 
         userProfilePanel.add(nameTitleLabel);

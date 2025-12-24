@@ -1,40 +1,41 @@
 package io.sustc.command;
 
+import com.opencsv.CSVReader;
 import com.opencsv.CSVReaderBuilder;
 import com.opencsv.RFC4180ParserBuilder;
+import com.opencsv.exceptions.CsvException;
 import io.fury.ThreadSafeFury;
 import io.sustc.benchmark.BenchmarkConfig;
-import io.sustc.benchmark.BenchmarkConstants;
 import io.sustc.benchmark.BenchmarkService;
-import io.sustc.dto.*;
+import io.sustc.dto.RecipeRecord;
+import io.sustc.dto.ReviewRecord;
+import io.sustc.dto.UserRecord;
 import io.sustc.service.DatabaseService;
 import io.sustc.service.RecipeService;
 import io.sustc.service.ReviewService;
 import io.sustc.service.UserService;
+import io.sustc.ui.RecipeSwingApp;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.shell.standard.ShellComponent;
 import org.springframework.shell.standard.ShellMethod;
-import com.opencsv.CSVReader;
-import com.opencsv.exceptions.CsvException;
 
+import javax.swing.*;
+import java.io.FileReader;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-
 import java.sql.Timestamp;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
-import java.time.Instant;
-import java.util.*;
-import java.util.regex.Pattern;
-import java.util.regex.Matcher;
-import java.io.FileReader;
-import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 //在Spring Shell应用中Java类需要使用注解@ShellComponent来修饰，
 //类中的方法使用注解@ShellMethod表示为一个具体的命令。
@@ -118,6 +119,14 @@ public class DatabaseCommand {
         }
     }
 
+    @ShellMethod(key = "GUI", value = "Launch the GUI application")
+    public void launchGui() {
+        System.setProperty("java.awt.headless", "false");
+        SwingUtilities.invokeLater(() -> {
+            new RecipeSwingApp(userService, recipeService, reviewService, databaseService).setVisible(true);
+        });
+    }
+
     private static String[] parseCsvList(String listStr) {
         if (listStr == null || listStr.trim().isEmpty() || "null".equalsIgnoreCase(listStr.trim())) {
             return new String[0];
@@ -167,7 +176,7 @@ public class DatabaseCommand {
 
         String trimmedStr = listStr.trim();
         // 移除开头的括号和结尾的引号“
-        if(trimmedStr.length()>=2) {
+        if (trimmedStr.length() >= 2) {
             trimmedStr = trimmedStr.substring(1, trimmedStr.length() - 1);
         }
 
@@ -308,7 +317,7 @@ public class DatabaseCommand {
                             .recipeCategory(fields[9] != null ? fields[9].trim() : "")
                             .recipeIngredientParts(parseCsvList(fields[10]))
                             .aggregatedRating(parseFloat(fields[11]))
-                            .reviewCount((int)parseFloat(fields[12]))
+                            .reviewCount((int) parseFloat(fields[12]))
                             .calories(parseFloat(fields[13]))
                             .fatContent(parseFloat(fields[14]))
                             .saturatedFatContent(parseFloat(fields[15]))
@@ -318,7 +327,7 @@ public class DatabaseCommand {
                             .fiberContent(parseFloat(fields[19]))
                             .sugarContent(parseFloat(fields[20]))
                             .proteinContent(parseFloat(fields[21]))
-                            .recipeServings((int)parseFloat(fields[22]))
+                            .recipeServings((int) parseFloat(fields[22]))
                             .recipeYield(fields[23] != null ? fields[23].trim() : "")
                             .build();
 
@@ -365,7 +374,7 @@ public class DatabaseCommand {
 
     @SneakyThrows
     @SuppressWarnings("unchecked")
-    public <T> void  serialize(T object, String... path) {
+    public <T> void serialize(T object, String... path) {
         // 获取文件路径
         var file = Paths.get(config.getDataPath(), path);
 

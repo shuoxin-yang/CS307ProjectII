@@ -1,28 +1,24 @@
 package io.sustc.service.impl;
 
-import io.sustc.dto.*;
+import io.sustc.dto.AuthInfo;
+import io.sustc.dto.PageResult;
+import io.sustc.dto.RecipeRecord;
 import io.sustc.service.RecipeService;
 import io.sustc.service.UserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.EmptyResultDataAccessException;
-import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
-import javax.sql.DataSource;
-import java.sql.*;
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 @Service
 @Slf4j
@@ -103,14 +99,14 @@ public class RecipeServiceImpl implements RecipeService {
         try {
             // 获取食谱基本信息
             String sql = """
-                SELECT r.*, u.authorName,
-                       STRING_AGG(ri.IngredientPart, '>' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
-                FROM recipes r
-                LEFT JOIN users u ON r.authorId = u.authorId
-                LEFT JOIN recipe_ingredients ri ON r.RecipeId = ri.RecipeId
-                WHERE r.RecipeId = ?
-                GROUP BY r.RecipeId, u.authorName
-                """;
+                    SELECT r.*, u.authorName,
+                           STRING_AGG(ri.IngredientPart, '>' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
+                    FROM recipes r
+                    LEFT JOIN users u ON r.authorId = u.authorId
+                    LEFT JOIN recipe_ingredients ri ON r.RecipeId = ri.RecipeId
+                    WHERE r.RecipeId = ?
+                    GROUP BY r.RecipeId, u.authorName
+                    """;
 
             return jdbcTemplate.queryForObject(sql, recipeRowMapper, recipeId);
         } catch (EmptyResultDataAccessException e) {
@@ -122,19 +118,19 @@ public class RecipeServiceImpl implements RecipeService {
     public PageResult<RecipeRecord> searchRecipes(String keyword, String category, Double minRating,
                                                   Integer page, Integer size, String sort) {
         // 参数验证
-        if(page<1 || size<=0) {
+        if (page < 1 || size <= 0) {
             throw new IllegalArgumentException("Invalid page or size parameters");
         }
 
         // 构建基础查询
         StringBuilder sql = new StringBuilder("""
-            SELECT r.*, u.authorName,
-                   STRING_AGG(ri.IngredientPart, '>' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
-            FROM recipes r
-            LEFT JOIN users u ON r.authorId = u.authorId
-            LEFT JOIN recipe_ingredients ri ON r.RecipeId = ri.recipeId
-            WHERE 1=1
-            """);
+                SELECT r.*, u.authorName,
+                       STRING_AGG(ri.IngredientPart, '>' ORDER BY LOWER(ri.IngredientPart)) as ingredientParts
+                FROM recipes r
+                LEFT JOIN users u ON r.authorId = u.authorId
+                LEFT JOIN recipe_ingredients ri ON r.RecipeId = ri.recipeId
+                WHERE 1=1
+                """);
 
         List<Object> params = new ArrayList<>();
 
@@ -253,15 +249,15 @@ public class RecipeServiceImpl implements RecipeService {
 
         // 插入食谱基本信息
         String sql = """
-            INSERT INTO recipes (
-                RecipeId, name, authorId, cookTime, prepTime, totalTime,
-                datePublished, description, recipeCategory, aggregatedRating,
-                reviewCount, calories, fatContent, saturatedFatContent,
-                cholesterolContent, sodiumContent, carbohydrateContent,
-                fiberContent, sugarContent, proteinContent, recipeServings,
-                recipeYield
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """;
+                INSERT INTO recipes (
+                    RecipeId, name, authorId, cookTime, prepTime, totalTime,
+                    datePublished, description, recipeCategory, aggregatedRating,
+                    reviewCount, calories, fatContent, saturatedFatContent,
+                    cholesterolContent, sodiumContent, carbohydrateContent,
+                    fiberContent, sugarContent, proteinContent, recipeServings,
+                    recipeYield
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
 
         Timestamp datePublished = dto.getDatePublished() != null ? dto.getDatePublished() : Timestamp.from(Instant.now());
 
@@ -337,9 +333,9 @@ public class RecipeServiceImpl implements RecipeService {
         // 开始级联删除
         // 1. 删除评论点赞
         String deleteReviewLikesSql = """
-            DELETE FROM review_likes
-            WHERE ReviewId IN (SELECT ReviewId FROM reviews WHERE RecipeId = ?)
-            """;
+                DELETE FROM review_likes
+                WHERE ReviewId IN (SELECT ReviewId FROM reviews WHERE RecipeId = ?)
+                """;
         jdbcTemplate.update(deleteReviewLikesSql, recipeId);
 
         // 2. 删除评论
@@ -383,7 +379,7 @@ public class RecipeServiceImpl implements RecipeService {
         }
 
         // 3. 要求至少提供一个非 null 参数（接口要求：null 表示不修改）
-        if ((cookTimeIso == null||cookTimeIso.trim().isEmpty()) && (prepTimeIso == null||prepTimeIso.trim().isEmpty())) {
+        if ((cookTimeIso == null || cookTimeIso.trim().isEmpty()) && (prepTimeIso == null || prepTimeIso.trim().isEmpty())) {
             return;
             //throw new IllegalArgumentException("At least one of cookTimeIso or prepTimeIso must be provided");
         }
@@ -472,42 +468,42 @@ public class RecipeServiceImpl implements RecipeService {
     public Map<String, Object> getClosestCaloriePair() {
         // 使用SQL窗口函数找到卡路里最接近的食谱对
         String sql = """
-            WITH recipe_calories AS (
-                SELECT RecipeId, calories, name
-                FROM recipes
-                WHERE calories IS NOT NULL
-            ),
-            pairs AS (
-                SELECT
-                    r1.RecipeId AS RecipeA,
-                    r2.RecipeId AS RecipeB,
-                    r1.calories AS CaloriesA,
-                    r2.calories AS CaloriesB,
-                    r1.name AS name_a,
-                    r2.name AS name_b,
-                    ABS(r1.calories - r2.calories) AS Difference,
-                    ROW_NUMBER() OVER (
-                        ORDER BY ABS(r1.calories - r2.calories),
-                                 LEAST(r1.RecipeId, r2.RecipeId),
-                                 GREATEST(r1.RecipeId, r2.RecipeId)
-                    ) as rn
-                FROM recipe_calories r1
-                CROSS JOIN recipe_calories r2
-                WHERE r1.RecipeId < r2.RecipeId
-            )
-            SELECT RecipeA, RecipeB, CaloriesA, CaloriesB, Difference
-            FROM pairs
-            WHERE rn = 1
-            """;
+                WITH recipe_calories AS (
+                    SELECT RecipeId, calories, name
+                    FROM recipes
+                    WHERE calories IS NOT NULL
+                ),
+                pairs AS (
+                    SELECT
+                        r1.RecipeId AS RecipeA,
+                        r2.RecipeId AS RecipeB,
+                        r1.calories AS CaloriesA,
+                        r2.calories AS CaloriesB,
+                        r1.name AS name_a,
+                        r2.name AS name_b,
+                        ABS(r1.calories - r2.calories) AS Difference,
+                        ROW_NUMBER() OVER (
+                            ORDER BY ABS(r1.calories - r2.calories),
+                                     LEAST(r1.RecipeId, r2.RecipeId),
+                                     GREATEST(r1.RecipeId, r2.RecipeId)
+                        ) as rn
+                    FROM recipe_calories r1
+                    CROSS JOIN recipe_calories r2
+                    WHERE r1.RecipeId < r2.RecipeId
+                )
+                SELECT RecipeA, RecipeB, CaloriesA, CaloriesB, Difference
+                FROM pairs
+                WHERE rn = 1
+                """;
 
         try {
             Map<String, Object> temp = jdbcTemplate.queryForMap(sql);
             Map<String, Object> result = new HashMap<>();
             result.put("RecipeA", temp.get("recipea"));
             result.put("RecipeB", temp.get("recipeb"));
-            result.put("CaloriesA", ((Number)temp.get("caloriesa")).doubleValue());
-            result.put("CaloriesB", ((Number)temp.get("caloriesb")).doubleValue());
-            result.put("Difference", ((Number)temp.get("difference")).doubleValue());
+            result.put("CaloriesA", ((Number) temp.get("caloriesa")).doubleValue());
+            result.put("CaloriesB", ((Number) temp.get("caloriesb")).doubleValue());
+            result.put("Difference", ((Number) temp.get("difference")).doubleValue());
             return result;
         } catch (EmptyResultDataAccessException e) {
             return null;
@@ -517,16 +513,16 @@ public class RecipeServiceImpl implements RecipeService {
     @Override
     public List<Map<String, Object>> getTop3MostComplexRecipesByIngredients() {
         String sql = """
-            SELECT
-                r.RecipeId AS "RecipeId",
-                r.name AS "Name",
-                COUNT(ri.IngredientPart) AS "IngredientCount"
-            FROM recipes r
-            JOIN recipe_ingredients ri ON r.RecipeId = ri.RecipeId
-            GROUP BY r.RecipeId, r.name
-            ORDER BY COUNT(ri.IngredientPart) DESC, r.RecipeId
-            LIMIT 3
-            """;
+                SELECT
+                    r.RecipeId AS "RecipeId",
+                    r.name AS "Name",
+                    COUNT(ri.IngredientPart) AS "IngredientCount"
+                FROM recipes r
+                JOIN recipe_ingredients ri ON r.RecipeId = ri.RecipeId
+                GROUP BY r.RecipeId, r.name
+                ORDER BY COUNT(ri.IngredientPart) DESC, r.RecipeId
+                LIMIT 3
+                """;
 
         List<Map<String, Object>> results = jdbcTemplate.queryForList(sql);
 
@@ -535,7 +531,7 @@ public class RecipeServiceImpl implements RecipeService {
             Map<String, Object> formatted = new LinkedHashMap<>();
             formatted.put("RecipeId", row.get("RecipeId"));
             formatted.put("Name", row.get("Name"));
-            formatted.put("IngredientCount", ((Long)row.get("IngredientCount")).intValue());
+            formatted.put("IngredientCount", ((Long) row.get("IngredientCount")).intValue());
             formattedResults.add(formatted);
         }
 
@@ -570,6 +566,21 @@ public class RecipeServiceImpl implements RecipeService {
         Duration prep = prepTime != null ? parseDurationLenient(prepTime) : Duration.ZERO;
         Duration total = cook.plus(prep);
         return total.toString();
+    }
+
+    // 前端要求，增加根据发布者id查询所有食谱的方法
+    public List<RecipeRecord> getRecipesByAuthorId(long authorId) {
+        if (authorId <= 0) {
+            throw new IllegalArgumentException("Author ID must be positive");
+        }
+
+        String sql = "SELECT recipes.recipeId FROM recipes WHERE authorId = ?";
+        List<Long> recipeIds = jdbcTemplate.queryForList(sql, Long.class, authorId);
+        List<RecipeRecord> recipes = new ArrayList<>();
+        for (Long recipeId : recipeIds) {
+            recipes.add(getRecipeById(recipeId));
+        }
+        return recipes;
     }
 }
 
