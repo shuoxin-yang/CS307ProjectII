@@ -158,6 +158,7 @@ public class RecipeSwingApp extends JFrame {
         searchInput.setBorder(BorderFactory.createLineBorder(new Color(255, 120, 73)));
         JComboBox<String> sortCombo = new JComboBox<>(new String[]{"评分-降序", "发布日期-降序", "卡路里-升序"});
         sortCombo.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        sortCombo.setBackground(new Color(255, 120, 73));
         JButton searchBtn = new JButton("搜索");
         searchBtn.setFont(new Font("微软雅黑", Font.PLAIN, 14));
         searchBtn.setBackground(new Color(255, 120, 73));
@@ -190,8 +191,8 @@ public class RecipeSwingApp extends JFrame {
         nicknameLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
         JButton logoutBtn = new JButton("退出");
         logoutBtn.setFont(new Font("微软雅黑", Font.PLAIN, 12));
-        logoutBtn.setBackground(Color.WHITE);
-        logoutBtn.setForeground(Color.GRAY);
+        logoutBtn.setBackground(new Color(255, 120, 73));
+        logoutBtn.setForeground(Color.WHITE);
         logoutBtn.setBorderPainted(false);
         logoutBtn.addActionListener(e -> doLogout()); // 绑定退出事件
         userInfoPanel.add(avatarLabel);
@@ -612,10 +613,17 @@ public class RecipeSwingApp extends JFrame {
         // 第三行：描述
         JPanel thirdRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 20, 10));
         thirdRow.setBackground(Color.WHITE);
-        JLabel descLabel = new JLabel("描述：" + recipe.getDescription());
-        descLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
-        descLabel.setForeground(Color.GRAY);
-        thirdRow.add(descLabel);
+        String fullDesc = recipe.getDescription();
+        JTextArea descArea = new JTextArea("描述：" + fullDesc);
+        descArea.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        descArea.setForeground(Color.GRAY);
+        descArea.setEditable(false);
+        descArea.setOpaque(false);
+        descArea.setBorder(null);
+        descArea.setLineWrap(true);
+        descArea.setWrapStyleWord(true);
+        descArea.setPreferredSize(new Dimension(600, 60)); // 设置合适的大小
+        thirdRow.add(descArea);
         infoPanel.add(thirdRow);
         infoPanel.add(Box.createVerticalStrut(10));
 
@@ -710,7 +718,7 @@ public class RecipeSwingApp extends JFrame {
             commentInput.setBorder(BorderFactory.createLineBorder(Color.LIGHT_GRAY));
             commentInput.setPreferredSize(new Dimension(600, 60));
             commentInput.setLineWrap(true);
-            JComboBox<Integer> ratingCombo = new JComboBox<>(new Integer[]{1, 2, 3, 4, 5});
+            JComboBox<String> ratingCombo = new JComboBox<>(new String[]{"  1  ", "  2  ", "  3  ", "  4  ", "  5  "});
             ratingCombo.setFont(new Font("微软雅黑", Font.PLAIN, 12));
             ratingCombo.setBackground(new Color(255, 120, 73));
             ratingCombo.setForeground(Color.WHITE);
@@ -721,7 +729,7 @@ public class RecipeSwingApp extends JFrame {
             postBtn.setBorderPainted(false);
             postBtn.addActionListener(e -> {
                 String commentText = commentInput.getText().trim();
-                int rating = (Integer) ratingCombo.getSelectedItem();
+                int rating = ((String) ratingCombo.getSelectedItem()).trim().charAt(0) - '0';
                 if (!commentText.isEmpty()) {
                     // TODO: 调用addReview接口
                     reviewService.addReview(new AuthInfo(currentUser.getAuthorId(),currentUser.getPassword()),recipe.getRecipeId(), rating, commentText);
@@ -840,7 +848,7 @@ public class RecipeSwingApp extends JFrame {
     // 搜索食谱（外部实现）
     private List<RecipeRecord> searchRecipes(String keyword, String sortOption) {
         // TODO: 实现搜索和排序逻辑
-        PageResult<RecipeRecord> result = recipeService.searchRecipes(keyword,"", 1.0,1,50,sortOption);
+        PageResult<RecipeRecord> result = recipeService.searchRecipes(keyword,"", 1.0,1,200,sortOption);
         return new ArrayList<>(result.getItems());
     }
 
@@ -851,10 +859,32 @@ public class RecipeSwingApp extends JFrame {
         for (int i = 0; i < displayCount; i++) {
             Object[] comment = comments.get(i);
             JPanel commentItem = new JPanel(new BorderLayout());
-            commentItem.setPreferredSize(new Dimension(700, 40));
+            commentItem.setPreferredSize(new Dimension(700, 60)); // 增加高度以适应换行
             commentItem.setBackground(Color.WHITE);
 
-            JLabel commentText = new JLabel((String)comment[1] + ": " + (String)comment[2]);
+            JPanel textPanel = new JPanel(new GridBagLayout());
+            textPanel.setBackground(Color.WHITE);
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.gridx = 0;
+            gbc.gridy = 0;
+            gbc.anchor = GridBagConstraints.NORTHWEST; // 顶部左对齐
+            gbc.insets = new Insets(0, 0, 0, 5); // 右边距
+            JLabel authorLabel = new JLabel((String)comment[1] + ":");
+            authorLabel.setFont(new Font("微软雅黑", Font.PLAIN, 12));
+            textPanel.add(authorLabel, gbc);
+            gbc.gridx = 1;
+            gbc.fill = GridBagConstraints.HORIZONTAL;
+            gbc.weightx = 1.0;
+            JTextArea contentArea = new JTextArea((String)comment[2]);
+            contentArea.setFont(new Font("微软雅黑", Font.PLAIN, 12));
+            contentArea.setEditable(false);
+            contentArea.setOpaque(false);
+            contentArea.setBorder(null);
+            contentArea.setLineWrap(true);
+            contentArea.setWrapStyleWord(true);
+            contentArea.setPreferredSize(new Dimension(500, 40));
+            textPanel.add(contentArea, gbc);
+
             JPanel likePanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
             likePanel.setBackground(Color.WHITE);
             JLabel likeCount = new JLabel((String)comment[3]);
@@ -873,7 +903,7 @@ public class RecipeSwingApp extends JFrame {
 
             likePanel.add(likeBtn);
             likePanel.add(likeCount);
-            commentItem.add(commentText, BorderLayout.WEST);
+            commentItem.add(textPanel, BorderLayout.WEST);
             commentItem.add(likePanel, BorderLayout.EAST);
             commentsList.add(commentItem);
             commentsList.add(Box.createVerticalStrut(5));

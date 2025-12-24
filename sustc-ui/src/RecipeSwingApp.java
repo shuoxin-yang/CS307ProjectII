@@ -96,7 +96,7 @@ public class RecipeSwingApp extends JFrame {
         this.reviewService = new ReviewServiceImpl();
         // TODO: 加载热门食谱，采用搜索rating方式
         hotRecipes = new ArrayList<RecipeRecord>();
-        PageResult<RecipeRecord> result = recipeService.searchRecipes("","",1.0,1,5,"rating_desc");
+        PageResult<RecipeRecord> result = recipeService.searchRecipes("","",1.0,1,200,"rating_desc");
         hotRecipes.addAll(result.getItems());
         myRecipes = new ArrayList<>();
     }
