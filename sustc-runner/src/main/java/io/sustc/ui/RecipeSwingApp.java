@@ -7,11 +7,15 @@ import io.sustc.service.ReviewService;
 import io.sustc.service.UserService;
 import io.sustc.service.impl.RecipeServiceImpl;
 import io.sustc.service.impl.UserServiceImpl;
-//import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
+import java.io.PrintStream;
+import java.io.UnsupportedEncodingException;
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -49,6 +53,7 @@ public class RecipeSwingApp extends JFrame {
     private JLabel userAgeLabel;
     private JLabel recipeCountLabel;
     private JLabel followerCountLabel;
+    private JPanel createRecipeButtonPanel;
     // 搜索分页相关
     private List<RecipeRecord> searchResults;
     private int currentSearchPage = 1;
@@ -67,6 +72,7 @@ public class RecipeSwingApp extends JFrame {
         // 加载热门食谱
         loadHotRecipes();
     }
+
     public RecipeSwingApp(UserService userService,
                           RecipeService recipeService,
                           ReviewService reviewService,
@@ -110,10 +116,10 @@ public class RecipeSwingApp extends JFrame {
 //
 //    }
     //应用版
-    private void initGlobalDate(){
+    private void initGlobalDate() {
         // TODO: 加载热门食谱，采用搜索rating方式
         hotRecipes = new ArrayList<RecipeRecord>();
-        PageResult<RecipeRecord> result = recipeService.searchRecipes("","",1.0,1,5,"rating_desc");
+        PageResult<RecipeRecord> result = recipeService.searchRecipes("", "", 1.0, 1, 5, "rating_desc");
         hotRecipes.addAll(result.getItems());
         myRecipes = new ArrayList<>();
     }
@@ -286,6 +292,22 @@ public class RecipeSwingApp extends JFrame {
         myRecipeContentPanel.add(unloginTip, BorderLayout.CENTER);
         myRecipeContentPanel.add(new JScrollPane(myRecipeList), BorderLayout.CENTER); // 覆盖未登录提示，并添加滚动条
 
+        // 添加创建食谱按钮面板
+        createRecipeButtonPanel = new JPanel();
+        createRecipeButtonPanel.setLayout(new FlowLayout(FlowLayout.CENTER));
+        createRecipeButtonPanel.setBackground(Color.WHITE);
+        createRecipeButtonPanel.setBorder(new EmptyBorder(10, 0, 10, 0));
+        JButton createRecipeBtn = new JButton("创建食谱");
+        createRecipeBtn.setPreferredSize(new Dimension(300, 40)); // 长按钮
+        createRecipeBtn.setFont(new Font("微软雅黑", Font.BOLD, 14));
+        createRecipeBtn.setBackground(new Color(255, 120, 73));
+        createRecipeBtn.setForeground(Color.WHITE);
+        createRecipeBtn.setBorderPainted(false);
+        createRecipeBtn.addActionListener(e -> openCreateRecipeDialog());
+        createRecipeButtonPanel.add(createRecipeBtn);
+        myRecipeContentPanel.add(createRecipeButtonPanel, BorderLayout.SOUTH);
+        createRecipeButtonPanel.setVisible(false);
+
         // 将上下两部分添加到myRecipePanel
         myRecipePanel.add(userProfilePanel, BorderLayout.NORTH);
         myRecipePanel.add(myRecipeContentPanel, BorderLayout.CENTER);
@@ -408,6 +430,7 @@ public class RecipeSwingApp extends JFrame {
     // 加载我的食谱
     private void loadMyRecipes() {
         myRecipeList.removeAll();
+        myRecipes = ((RecipeServiceImpl)recipeService).getRecipesByAuthorId(currentUser.getAuthorId());
         for (RecipeRecord recipe : myRecipes) {
             JPanel card = createRecipeCard(recipe);
             myRecipeList.add(card);
@@ -429,6 +452,7 @@ public class RecipeSwingApp extends JFrame {
             public void mouseEntered(java.awt.event.MouseEvent evt) {
                 card.setBorder(BorderFactory.createLineBorder(new Color(255, 120, 73), 1));
             }
+
             public void mouseExited(java.awt.event.MouseEvent evt) {
                 card.setBorder(BorderFactory.createLineBorder(Color.LIGHT_GRAY, 1));
             }
@@ -541,7 +565,7 @@ public class RecipeSwingApp extends JFrame {
                 currentUser = userService.getById(authorId);
                 //currentUser = new UserRecord(Long.parseLong(authorId), "用户" + authorId, "",18,0,0,new long[]{},new long[]{}, "password",false);
                 // 更新当前用户的我的食谱数据
-                myRecipes = ((RecipeServiceImpl)recipeService).getRecipesByAuthorId(currentUser.getAuthorId());
+                loadMyRecipes();
                 // 更新UI
                 updateUserUI();
                 // 刷新热门食谱（显示完整信息）
@@ -729,11 +753,29 @@ public class RecipeSwingApp extends JFrame {
             postBtn.setBorderPainted(false);
             postBtn.addActionListener(e -> {
                 String commentText = commentInput.getText().trim();
-                int rating = ((String) ratingCombo.getSelectedItem()).trim().charAt(0) - '0';
+                int rating;
+
+                try {
+//                    System.setOut(new PrintStream(System.out, true, "UTF-8"));
+                    rating = Integer.parseInt(((String) ratingCombo.getSelectedItem()).trim());
+                } catch (NumberFormatException ex) {
+                    //System.out.println(1);
+                    rating = 5; // 默认评分5
+                } catch (NullPointerException ey) {
+                    //System.out.println(2);
+                    rating = 5;
+                }
                 if (!commentText.isEmpty()) {
                     // TODO: 调用addReview接口
-                    reviewService.addReview(new AuthInfo(currentUser.getAuthorId(),currentUser.getPassword()),recipe.getRecipeId(), rating, commentText);
+                    reviewService.addReview(new AuthInfo(currentUser.getAuthorId(), currentUser.getPassword()), recipe.getRecipeId(), rating, commentText);
                     JOptionPane.showMessageDialog(this, "评论发布成功！");
+                    // 更新菜谱评分，评论数
+                    recipe.setAggregatedRating((recipe.getAggregatedRating() * recipe.getReviewCount() + rating) / (recipe.getReviewCount() + 1));
+                    recipe.setReviewCount(recipe.getReviewCount() + 1);
+                    // 关闭当前窗口并重新打开以刷新评论
+                    detailDialog.dispose();
+                    showRecipeDetail(recipe);
+                    // 清空输入框
                     commentInput.setText("");
                 } else {
                     JOptionPane.showMessageDialog(detailDialog, "评论内容不能为空！");
@@ -766,9 +808,9 @@ public class RecipeSwingApp extends JFrame {
 //                    new String[]{"用户J", "值得一做", "7"}
 //            );
             // TODO: 获取真实评论数据,调用接口listByRecipe
-            PageResult<ReviewRecord> reviews = reviewService.listByRecipe(recipe.getRecipeId(),1,5,"likes-desc");
+            PageResult<ReviewRecord> reviews = reviewService.listByRecipe(recipe.getRecipeId(), 1, 5, "likes-desc");
             List<Object[]> comments = new ArrayList<>();
-            for(ReviewRecord review : reviews.getItems()){
+            for (ReviewRecord review : reviews.getItems()) {
                 comments.add(new Object[]{review.getReviewId(), review.getAuthorName(), review.getReview(), String.valueOf(review.getLikes().length)});
             }
             int[] visibleComments = {5}; // 控制显示的评论数量
@@ -791,8 +833,8 @@ public class RecipeSwingApp extends JFrame {
         // 关闭按钮
         JButton closeBtn = new JButton("关闭");
         closeBtn.setFont(new Font("微软雅黑", Font.PLAIN, 14));
-        closeBtn.setBackground(Color.WHITE);
-        closeBtn.setForeground(Color.GRAY);
+        closeBtn.setBackground(new Color(255, 120, 73));
+        closeBtn.setForeground(Color.WHITE);
         closeBtn.setBorderPainted(false);
         closeBtn.addActionListener(e -> detailDialog.dispose());
         JPanel btnPanel = new JPanel();
@@ -848,7 +890,7 @@ public class RecipeSwingApp extends JFrame {
     // 搜索食谱（外部实现）
     private List<RecipeRecord> searchRecipes(String keyword, String sortOption) {
         // TODO: 实现搜索和排序逻辑
-        PageResult<RecipeRecord> result = recipeService.searchRecipes(keyword,"", 1.0,1,200,sortOption);
+        PageResult<RecipeRecord> result = recipeService.searchRecipes(keyword, "", 1.0, 1, 200, sortOption);
         return new ArrayList<>(result.getItems());
     }
 
@@ -869,13 +911,13 @@ public class RecipeSwingApp extends JFrame {
             gbc.gridy = 0;
             gbc.anchor = GridBagConstraints.NORTHWEST; // 顶部左对齐
             gbc.insets = new Insets(0, 0, 0, 5); // 右边距
-            JLabel authorLabel = new JLabel((String)comment[1] + ":");
+            JLabel authorLabel = new JLabel((String) comment[1] + ":");
             authorLabel.setFont(new Font("微软雅黑", Font.PLAIN, 12));
             textPanel.add(authorLabel, gbc);
             gbc.gridx = 1;
             gbc.fill = GridBagConstraints.HORIZONTAL;
             gbc.weightx = 1.0;
-            JTextArea contentArea = new JTextArea((String)comment[2]);
+            JTextArea contentArea = new JTextArea((String) comment[2]);
             contentArea.setFont(new Font("微软雅黑", Font.PLAIN, 12));
             contentArea.setEditable(false);
             contentArea.setOpaque(false);
@@ -887,7 +929,7 @@ public class RecipeSwingApp extends JFrame {
 
             JPanel likePanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
             likePanel.setBackground(Color.WHITE);
-            JLabel likeCount = new JLabel((String)comment[3]);
+            JLabel likeCount = new JLabel((String) comment[3]);
             JButton likeBtn = new JButton("❤");
             likeBtn.setBorderPainted(false);
             likeBtn.setBackground(Color.WHITE);
@@ -895,9 +937,19 @@ public class RecipeSwingApp extends JFrame {
                 long reviewId = (Long) comment[0];
                 try {
                     long newCount = likeReview(reviewId);
+                    if (newCount == Long.parseLong((String) comment[3])) {
+                        // 已经点过赞，执行取消点赞
+                        newCount = unlikeReview(reviewId);
+                        comment[3] = String.valueOf(Long.parseLong((String) comment[3]) - 1);
+                    } else {
+                        comment[3] = String.valueOf(Long.parseLong((String) comment[3]) + 1);
+                    }
                     likeCount.setText(String.valueOf(newCount));
                 } catch (SecurityException ex) {
-                    JOptionPane.showMessageDialog(this, ex.getMessage());
+                    if (ex.getMessage().equals("Users cannot like their own reviews"))
+                        JOptionPane.showMessageDialog(this, "不能点赞自己的评论！");
+                    else
+                        JOptionPane.showMessageDialog(this, "点赞失败，请稍后重试！");
                 }
             });
 
@@ -931,7 +983,11 @@ public class RecipeSwingApp extends JFrame {
     // 点赞评论
     private long likeReview(long reviewId) throws SecurityException {
         // TODO: 点赞实现
-        return reviewService.likeReview(new AuthInfo(currentUser.getAuthorId(),currentUser.getPassword()),reviewId);
+        return reviewService.likeReview(new AuthInfo(currentUser.getAuthorId(), currentUser.getPassword()), reviewId);
+    }
+
+    private long unlikeReview(long reviewId) throws SecurityException {
+        return reviewService.unlikeReview(new AuthInfo(currentUser.getAuthorId(), currentUser.getPassword()), reviewId);
     }
 
     // 更新用户UI（登录后）
@@ -942,11 +998,12 @@ public class RecipeSwingApp extends JFrame {
         nicknameLabel.setText(currentUser.getAuthorName());
         userAgeLabel.setText(String.valueOf(currentUser.getAge()));
         // TODO: 调用接口实现
-        recipeCountLabel.setText(String.valueOf(((UserServiceImpl)userService).getUserRecipeCount(currentUser.getAuthorId())));
+        recipeCountLabel.setText(String.valueOf(((UserServiceImpl) userService).getUserRecipeCount(currentUser.getAuthorId())));
         followerCountLabel.setText(String.valueOf(currentUser.getFollowers()));
         // 显示我的食谱
         unloginTip.setVisible(false);
         myRecipeList.setVisible(true);
+        createRecipeButtonPanel.setVisible(true);
         loadMyRecipes();
         // 显示我的食谱（简化版，仅提示）
         //JOptionPane.showMessageDialog(this, "已登录，可查看完整食谱信息！");
@@ -967,13 +1024,313 @@ public class RecipeSwingApp extends JFrame {
         unloginTip.setVisible(true);
         myRecipeList.setVisible(false);
         myRecipeList.removeAll();
+        createRecipeButtonPanel.setVisible(false);
         // 刷新热门食谱（隐藏完整信息）
         loadHotRecipes();
         JOptionPane.showMessageDialog(this, "退出登录成功！");
     }
 
+    // 校验时间方法
+    private boolean validateTimes(String prepTime, String cookTime, String totalTime) {
+        try {
+            Duration prep = Duration.parse(prepTime);
+            Duration cook = Duration.parse(cookTime);
+            Duration total = Duration.parse(totalTime);
+            return prep.plus(cook).equals(total);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // 创建食谱对话框
+    private void openCreateRecipeDialog() {
+        JDialog createDialog = new JDialog(this, "创建食谱", true);
+        createDialog.setSize(800, 600);
+        createDialog.setLocationRelativeTo(this);
+        createDialog.setLayout(new BorderLayout());
+
+        // 主面板，使用滚动
+        JPanel mainPanel = new JPanel();
+        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
+        mainPanel.setBorder(new EmptyBorder(20, 20, 20, 20));
+        mainPanel.setBackground(Color.WHITE);
+
+        // 食谱名称
+        JPanel namePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        namePanel.setBackground(Color.WHITE);
+        JLabel nameLabel = new JLabel("食谱名称：");
+        nameLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField nameInput = new JTextField(30);
+        nameInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        namePanel.add(nameLabel);
+        namePanel.add(nameInput);
+        mainPanel.add(namePanel);
+        mainPanel.add(Box.createVerticalStrut(10));
+
+        // 食谱描述
+        JPanel descPanel = new JPanel(new BorderLayout());
+        descPanel.setBackground(Color.WHITE);
+        JLabel descLabel = new JLabel("食谱描述：");
+        descLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextArea descInput = new JTextArea(3, 30);
+        descInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        descInput.setLineWrap(true);
+        descInput.setWrapStyleWord(true);
+        JScrollPane descScroll = new JScrollPane(descInput);
+        descScroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+        descPanel.add(descLabel, BorderLayout.NORTH);
+        descPanel.add(descScroll, BorderLayout.CENTER);
+        mainPanel.add(descPanel);
+        mainPanel.add(Box.createVerticalStrut(10));
+
+        // 类别
+        JPanel categoryPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        categoryPanel.setBackground(Color.WHITE);
+        JLabel categoryLabel = new JLabel("类别：");
+        categoryLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField categoryInput = new JTextField(30);
+        categoryInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        categoryPanel.add(categoryLabel);
+        categoryPanel.add(categoryInput);
+        mainPanel.add(categoryPanel);
+        mainPanel.add(Box.createVerticalStrut(10));
+
+        // 食材
+        JPanel ingPanel = new JPanel(new BorderLayout());
+        ingPanel.setBackground(Color.WHITE);
+        JLabel ingLabel = new JLabel("食材（每行一个）：");
+        ingLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextArea ingInput = new JTextArea(5, 30);
+        ingInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        ingInput.setLineWrap(true);
+        ingInput.setWrapStyleWord(true);
+        JScrollPane ingScroll = new JScrollPane(ingInput);
+        ingScroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+        ingPanel.add(ingLabel, BorderLayout.NORTH);
+        ingPanel.add(ingScroll, BorderLayout.CENTER);
+        mainPanel.add(ingPanel);
+        mainPanel.add(Box.createVerticalStrut(10));
+
+        // 时间
+        JPanel timePanel = new JPanel(new GridLayout(1, 6, 10, 0));
+        timePanel.setBackground(Color.WHITE);
+        JLabel prepLabel = new JLabel("准备时间（ISO 8601）：");
+        prepLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField prepInput = new JTextField("PT0H0M");
+        prepInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel cookLabel = new JLabel("烹饪时间（ISO 8601）：");
+        cookLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField cookInput = new JTextField("PT0H0M");
+        cookInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel totalLabel = new JLabel("总时间（ISO 8601）：");
+        totalLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField totalInput = new JTextField("PT0H0M");
+        totalInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        timePanel.add(prepLabel);
+        timePanel.add(prepInput);
+        timePanel.add(cookLabel);
+        cookLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        timePanel.add(cookInput);
+        timePanel.add(totalLabel);
+        timePanel.add(totalInput);
+        mainPanel.add(timePanel);
+        mainPanel.add(Box.createVerticalStrut(10));
+
+        // 营养信息
+        JPanel nutritionPanel = new JPanel(new GridLayout(0, 4, 10, 5));
+        nutritionPanel.setBackground(Color.WHITE);
+        JLabel caloriesLabel = new JLabel("卡路里：");
+        caloriesLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField caloriesInput = new JTextField("0");
+        caloriesInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel fatLabel = new JLabel("脂肪：");
+        fatLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField fatInput = new JTextField("0");
+        fatInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel satFatLabel = new JLabel("饱和脂肪：");
+        satFatLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField satFatInput = new JTextField("0");
+        satFatInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel cholesterolLabel = new JLabel("胆固醇：");
+        cholesterolLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField cholesterolInput = new JTextField("0");
+        cholesterolInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel sodiumLabel = new JLabel("钠：");
+        sodiumLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField sodiumInput = new JTextField("0");
+        sodiumInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel carbLabel = new JLabel("碳水化合物：");
+        carbLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField carbInput = new JTextField("0");
+        carbInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel fiberLabel = new JLabel("纤维：");
+        fiberLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField fiberInput = new JTextField("0");
+        fiberInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel sugarLabel = new JLabel("糖：");
+        sugarLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField sugarInput = new JTextField("0");
+        sugarInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel proteinLabel = new JLabel("蛋白质：");
+        proteinLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField proteinInput = new JTextField("0");
+        proteinInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        nutritionPanel.add(caloriesLabel);
+        nutritionPanel.add(caloriesInput);
+        nutritionPanel.add(fatLabel);
+        nutritionPanel.add(fatInput);
+        nutritionPanel.add(satFatLabel);
+        nutritionPanel.add(satFatInput);
+        nutritionPanel.add(cholesterolLabel);
+        nutritionPanel.add(cholesterolInput);
+        nutritionPanel.add(sodiumLabel);
+        nutritionPanel.add(sodiumInput);
+        nutritionPanel.add(carbLabel);
+        nutritionPanel.add(carbInput);
+        nutritionPanel.add(fiberLabel);
+        nutritionPanel.add(fiberInput);
+        nutritionPanel.add(sugarLabel);
+        nutritionPanel.add(sugarInput);
+        nutritionPanel.add(proteinLabel);
+        nutritionPanel.add(proteinInput);
+        mainPanel.add(nutritionPanel);
+        mainPanel.add(Box.createVerticalStrut(10));
+
+        // 其他
+        JPanel otherPanel = new JPanel(new GridLayout(1, 4, 10, 0));
+        otherPanel.setBackground(Color.WHITE);
+        JLabel servingsLabel = new JLabel("适用人数：");
+        servingsLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField servingsInput = new JTextField("1");
+        servingsInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JLabel yieldLabel = new JLabel("产量：");
+        yieldLabel.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        JTextField yieldInput = new JTextField("");
+        yieldInput.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        otherPanel.add(servingsLabel);
+        otherPanel.add(servingsInput);
+        otherPanel.add(yieldLabel);
+        otherPanel.add(yieldInput);
+        mainPanel.add(otherPanel);
+        mainPanel.add(Box.createVerticalStrut(20));
+
+        // 滚动面板
+        JScrollPane scrollPane = new JScrollPane(mainPanel);
+        scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+        createDialog.add(scrollPane, BorderLayout.CENTER);
+
+        // 按钮面板
+        JPanel btnPanel = new JPanel();
+        btnPanel.setLayout(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        btnPanel.setBackground(Color.WHITE);
+        JButton submitBtn = new JButton("创建食谱");
+        submitBtn.setFont(new Font("微软雅黑", Font.BOLD, 14));
+        submitBtn.setBackground(new Color(255, 120, 73));
+        submitBtn.setForeground(Color.WHITE);
+        submitBtn.setBorderPainted(false);
+        submitBtn.addActionListener(e -> {
+            try {
+                // 收集数据
+                String name = nameInput.getText().trim();
+                String description = descInput.getText().trim();
+                String category = categoryInput.getText().trim();
+                String[] ingredients = ingInput.getText().split("\n");
+                for (int i = 0; i < ingredients.length; i++) {
+                    ingredients[i] = ingredients[i].trim();
+                }
+                String prepTime = prepInput.getText().trim();
+                String cookTime = cookInput.getText().trim();
+                String totalTime = totalInput.getText().trim();
+                float calories = Float.parseFloat(caloriesInput.getText().trim());
+                float fat = Float.parseFloat(fatInput.getText().trim());
+                float satFat = Float.parseFloat(satFatInput.getText().trim());
+                float cholesterol = Float.parseFloat(cholesterolInput.getText().trim());
+                float sodium = Float.parseFloat(sodiumInput.getText().trim());
+                float carb = Float.parseFloat(carbInput.getText().trim());
+                float fiber = Float.parseFloat(fiberInput.getText().trim());
+                float sugar = Float.parseFloat(sugarInput.getText().trim());
+                float protein = Float.parseFloat(proteinInput.getText().trim());
+                int servings = Integer.parseInt(servingsInput.getText().trim());
+                String yield = yieldInput.getText().trim();
+
+                if (name.isEmpty() || description.isEmpty() || category.isEmpty()) {
+                    JOptionPane.showMessageDialog(createDialog, "请填写必填字段！");
+                    return;
+                }
+
+                // 校验时间
+                if (!validateTimes(prepTime, cookTime, totalTime)) {
+                    JOptionPane.showMessageDialog(createDialog, "时间校验失败！请确保准备时间 + 烹饪时间 = 总时间，且格式正确。");
+                    return;
+                }
+
+                // 创建RecipeRecord
+                RecipeRecord newRecipe = RecipeRecord.builder()
+                        .name(name)
+                        .authorId(currentUser.getAuthorId())
+                        .authorName(currentUser.getAuthorName())
+                        .cookTime(cookTime)
+                        .prepTime(prepTime)
+                        .totalTime(totalTime)
+                        .description(description)
+                        .recipeCategory(category)
+                        .recipeIngredientParts(ingredients)
+                        .aggregatedRating(5.0f)
+                        .reviewCount(0)
+                        .calories(calories)
+                        .fatContent(fat)
+                        .saturatedFatContent(satFat)
+                        .cholesterolContent(cholesterol)
+                        .sodiumContent(sodium)
+                        .carbohydrateContent(carb)
+                        .fiberContent(fiber)
+                        .sugarContent(sugar)
+                        .proteinContent(protein)
+                        .recipeServings(servings)
+                        .recipeYield(yield)
+                        .datePublished(Timestamp.valueOf(LocalDateTime.now()))
+                        .build();
+
+                // TODO: 调用数据库交互，添加食谱
+                try {
+                    recipeService.createRecipe(newRecipe, new AuthInfo(currentUser.getAuthorId(), currentUser.getPassword()));
+                } catch (IllegalArgumentException ex) {
+                    System.out.println(ex.getMessage());
+                    JOptionPane.showMessageDialog(createDialog, "食谱创建失败：" + ex.getMessage());
+                    return;
+                    //throw new IllegalArgumentException(ex);
+                }
+
+                JOptionPane.showMessageDialog(this, "食谱创建成功！（TODO: 数据库交互）");
+                createDialog.dispose();
+                // 刷新我的食谱
+                loadMyRecipes();
+            } catch (NumberFormatException ex) {
+                System.out.println(ex.getMessage());
+                JOptionPane.showMessageDialog(createDialog, "请输入有效的数字！");
+            }
+        });
+        JButton cancelBtn = new JButton("取消");
+        cancelBtn.setFont(new Font("微软雅黑", Font.PLAIN, 14));
+        cancelBtn.setBackground(Color.WHITE);
+        cancelBtn.setForeground(Color.GRAY);
+        cancelBtn.setBorderPainted(false);
+        cancelBtn.addActionListener(e -> createDialog.dispose());
+        btnPanel.add(submitBtn);
+        btnPanel.add(cancelBtn);
+        createDialog.add(btnPanel, BorderLayout.SOUTH);
+
+        createDialog.setVisible(true);
+    }
+
     // 启动应用
     public static void main(String[] args) {
+        try {
+            System.setOut(new PrintStream(System.out, true, "UTF-8"));
+        } catch (UnsupportedEncodingException e) {
+            System.out.println("unsupported encoding");
+            throw new RuntimeException(e);
+        }
         SwingUtilities.invokeLater(() -> {
             new RecipeSwingApp().setVisible(true);
         });

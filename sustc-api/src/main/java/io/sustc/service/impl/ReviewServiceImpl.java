@@ -17,8 +17,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 @Service
 @Slf4j
@@ -143,6 +145,7 @@ public class ReviewServiceImpl implements ReviewService {
                 if (inserted > 0) {
                     // 3. 刷新食谱统计（平均分与评论数）
                     refreshRecipeRatingStats(recipeId);
+                    //System.out.printf("刷新食谱统计完成%d\n",rating);
 
 //                    log.info("Review {} added for recipe {} by user {}", reviewId, recipeId, auth.getAuthorId());
                     return reviewId;
